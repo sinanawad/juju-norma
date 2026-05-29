@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Build artifacts
+*.charm
+*.rock
+dist/
+
+# Testing / Coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Tooling
+.ruff_cache/
+.python-version
+
+# Go
+workload/norma
+
+# IDE
+.vscode/
+.idea/
+.omc/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+workload/Dockerfile
+
+# Secrets (never commit)
+*-token.txt
+*.token
+charmhub-token.txt
