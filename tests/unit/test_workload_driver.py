@@ -22,12 +22,16 @@ def _driver(tmp_path):
     )
 
 
-def _fake_systemctl(calls, returncode=0):
-    """Return a subprocess.run replacement recording argv and returning a code."""
+def _fake_systemctl(calls, returncode=0, stdout=""):
+    """Return a subprocess.run replacement recording argv and returning a code.
+
+    ``stdout`` is what ``systemctl is-active <svc>`` (no --quiet) reports, used by
+    SystemdDriver.service_state().
+    """
 
     def _run(argv, **kwargs):
         calls.append(argv)
-        return types.SimpleNamespace(returncode=returncode, stderr="")
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
 
     return _run
 
@@ -56,13 +60,13 @@ class TestApply:
         verbs = [c[1] for c in calls]
         assert verbs == ["daemon-reload", "enable", "reset-failed", "restart"]
 
-    def test_unchanged_and_running_is_noop(self, tmp_path, monkeypatch):
+    def test_unchanged_and_active_is_noop(self, tmp_path, monkeypatch):
         # Pre-write the exact desired unit; service already active.
         desired = norma.build_systemd_unit(8080, "1.0.0", {})
         (tmp_path / "norma.service").write_text(desired)
         calls: list[list[str]] = []
         monkeypatch.setattr(
-            workload_driver.subprocess, "run", _fake_systemctl(calls, returncode=0)
+            workload_driver.subprocess, "run", _fake_systemctl(calls, stdout="active\n")
         )
         driver = _driver(tmp_path)
 
@@ -74,13 +78,13 @@ class TestApply:
         assert "restart" not in verbs
         assert "enable" in verbs
 
-    def test_unchanged_but_stopped_restarts(self, tmp_path, monkeypatch):
+    def test_unchanged_but_inactive_restarts(self, tmp_path, monkeypatch):
         desired = norma.build_systemd_unit(8080, "1.0.0", {})
         (tmp_path / "norma.service").write_text(desired)
         calls: list[list[str]] = []
-        # is-active returns non-zero (stopped) → restart path.
+        # service_state() == "inactive" (cleanly stopped) → restart, no reset-failed.
         monkeypatch.setattr(
-            workload_driver.subprocess, "run", _fake_systemctl(calls, returncode=3)
+            workload_driver.subprocess, "run", _fake_systemctl(calls, stdout="inactive\n")
         )
         driver = _driver(tmp_path)
 
@@ -88,7 +92,25 @@ class TestApply:
 
         verbs = [c[1] for c in calls]
         assert "daemon-reload" not in verbs  # unit unchanged
-        assert "restart" in verbs  # but it was not running
+        assert "reset-failed" not in verbs  # M2: do not mask a crash-loop
+        assert "restart" in verbs  # but it was inactive, so bring it back
+
+    def test_unchanged_and_failed_does_not_restart(self, tmp_path, monkeypatch):
+        # M2: a crash-looped unit latched into `failed` must NOT be reset/restarted
+        # by an unchanged reconcile — it stays failed so the charm surfaces Blocked.
+        desired = norma.build_systemd_unit(8080, "1.0.0", {})
+        (tmp_path / "norma.service").write_text(desired)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            workload_driver.subprocess, "run", _fake_systemctl(calls, stdout="failed\n")
+        )
+        driver = _driver(tmp_path)
+
+        driver.apply(port=8080, version="1.0.0", env={})
+
+        verbs = [c[1] for c in calls]
+        assert "restart" not in verbs
+        assert "reset-failed" not in verbs
 
     def test_write_failure_raises_workload_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(workload_driver.subprocess, "run", _fake_systemctl([]))
@@ -126,6 +148,59 @@ class TestSystemctlErrors:
         monkeypatch.setattr(workload_driver.subprocess, "run", _fail)
         with pytest.raises(WorkloadError, match="failed"):
             _driver(tmp_path).restart()
+
+
+class TestWorkloadVersion:
+    def test_returns_version_from_http(self, tmp_path, monkeypatch):
+        import contextlib
+        import io
+
+        @contextlib.contextmanager
+        def _fake_urlopen(url, timeout=2):
+            assert "9090/version" in url
+            yield io.BytesIO(b'{"version": "1.2.3"}')
+
+        monkeypatch.setattr(workload_driver.urllib.request, "urlopen", _fake_urlopen)
+        assert _driver(tmp_path).workload_version(9090) == "1.2.3"
+
+    def test_returns_empty_on_connection_error(self, tmp_path, monkeypatch):
+        def _boom(url, timeout=2):
+            raise workload_driver.urllib.error.URLError("refused")
+
+        monkeypatch.setattr(workload_driver.urllib.request, "urlopen", _boom)
+        assert _driver(tmp_path).workload_version(8080) == ""
+
+    def test_returns_empty_on_malformed_json(self, tmp_path, monkeypatch):
+        import contextlib
+        import io
+
+        @contextlib.contextmanager
+        def _fake_urlopen(url, timeout=2):
+            yield io.BytesIO(b"not json")
+
+        monkeypatch.setattr(workload_driver.urllib.request, "urlopen", _fake_urlopen)
+        assert _driver(tmp_path).workload_version() == ""
+
+
+class TestServiceState:
+    def test_state_word_returned(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            workload_driver.subprocess, "run", _fake_systemctl([], stdout="active\n")
+        )
+        assert _driver(tmp_path).service_state() == "active"
+
+    def test_failed_detected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            workload_driver.subprocess, "run", _fake_systemctl([], stdout="failed\n")
+        )
+        d = _driver(tmp_path)
+        assert d.service_state() == "failed"
+        assert d.service_failed() is True
+
+    def test_empty_output_is_unknown(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(workload_driver.subprocess, "run", _fake_systemctl([], stdout=""))
+        assert _driver(tmp_path).service_state() == "unknown"
+        assert _driver(tmp_path).service_failed() is False
 
 
 class TestInstallBinary:

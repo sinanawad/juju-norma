@@ -24,7 +24,7 @@ import workload_driver
 @pytest.fixture(autouse=True)
 def _no_host_side_effects(tmp_path, monkeypatch):
     def _fake_run(argv, **kwargs):
-        return types.SimpleNamespace(returncode=0, stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(workload_driver.subprocess, "run", _fake_run)
     monkeypatch.setattr(norma, "LEDGER_FILE", str(tmp_path / "ledger.json"))

@@ -16,11 +16,16 @@ import workload_driver
 from charm import NormaCharm
 
 
-def _make_ready(monkeypatch, *, running=True):
-    """Make the SystemdDriver report ready + running with a no-op apply."""
+def _make_ready(monkeypatch, *, running=True, failed=False):
+    """Make the SystemdDriver report ready with a no-op apply.
+
+    ``running`` controls service_running; ``failed`` controls service_failed
+    (a crash-looped unit → Blocked). Default: running, not failed → Active.
+    """
     monkeypatch.setattr(workload_driver.SystemdDriver, "is_ready", lambda self: True)
     monkeypatch.setattr(workload_driver.SystemdDriver, "apply", lambda self, **kw: None)
     monkeypatch.setattr(workload_driver.SystemdDriver, "service_running", lambda self: running)
+    monkeypatch.setattr(workload_driver.SystemdDriver, "service_failed", lambda self: failed)
 
 
 class TestCharmInit:
@@ -52,6 +57,15 @@ class TestStatus:
         out = ctx.run(ctx.on.collect_unit_status(), ops.testing.State())
         assert isinstance(out.unit_status, ops.MaintenanceStatus)
 
+    def test_blocked_when_workload_failed(self, monkeypatch):
+        # M2: a crash-looped workload (systemd `failed`) surfaces as Blocked,
+        # not perpetual Maintenance.
+        _make_ready(monkeypatch, running=False, failed=True)
+        ctx = ops.testing.Context(NormaCharm)
+        out = ctx.run(ctx.on.collect_unit_status(), ops.testing.State())
+        assert isinstance(out.unit_status, ops.BlockedStatus)
+        assert "failed" in out.unit_status.message.lower()
+
     def test_blocked_on_invalid_config(self):
         ctx = ops.testing.Context(NormaCharm)
         out = ctx.run(ctx.on.config_changed(), ops.testing.State(config={"calibration-int": 0}))
@@ -77,6 +91,21 @@ class TestWorkloadApply:
         out = ctx.run(ctx.on.config_changed(), ops.testing.State(config={"calibration-int": 9090}))
         assert out.workload_version == "dev"
         assert ops.testing.TCPPort(9090) in out.opened_ports
+
+    def test_stale_port_closed_when_calibration_int_changes(self, monkeypatch):
+        # M3: reconfiguring the port closes the old opened port instead of
+        # accumulating both.
+        _make_ready(monkeypatch)
+        ctx = ops.testing.Context(NormaCharm)
+        out = ctx.run(
+            ctx.on.config_changed(),
+            ops.testing.State(
+                config={"calibration-int": 9090},
+                opened_ports={ops.testing.TCPPort(8080)},
+            ),
+        )
+        assert ops.testing.TCPPort(9090) in out.opened_ports
+        assert ops.testing.TCPPort(8080) not in out.opened_ports
 
 
 class TestResourceLayDown:

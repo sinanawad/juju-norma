@@ -10,13 +10,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync/atomic"
+	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -257,8 +261,25 @@ func main() {
 	addr := fmt.Sprintf(":%d", *port)
 	fmt.Printf("norma workload listening on %s (version %s)\n", addr, version)
 
-	if err := http.ListenAndServe(addr, mux); err != nil { //nolint:gosec
-		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
-		os.Exit(1)
+	srv := &http.Server{Addr: addr, Handler: mux} //nolint:gosec // sterile calibration server
+
+	// Graceful shutdown: systemctl stop sends SIGTERM; drain in-flight requests
+	// instead of dropping connections (the systemd unit is Type=simple).
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	stop()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
 	}
 }

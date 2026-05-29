@@ -12,8 +12,11 @@ hypothetical. ~80-85% of the sibling's *logic* is reusable behind this seam, but
 the seam itself is new abstraction work.
 """
 
+import json
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -66,7 +69,7 @@ class WorkloadDriver(Protocol):
         """Stop the service and remove the unit file (idempotent)."""
         ...
 
-    def workload_version(self) -> str:
+    def workload_version(self, port: int = norma.DEFAULT_PORT) -> str:
         """Best-effort workload version, or "" if unavailable."""
         ...
 
@@ -145,13 +148,33 @@ class SystemdDriver:
             self._systemctl("daemon-reload")
         self._systemctl("enable", self.service_name)
 
-        if changed or not self.service_running():
-            # Clear any prior start-limit-hit so a wedged unit can recover.
+        if changed:
+            # A real config change: clear any prior start-limit so the new unit
+            # can start cleanly, then (re)start it.
             self._systemctl("reset-failed", self.service_name, check=False)
+            self._systemctl("restart", self.service_name)
+        elif self.service_state() == "inactive":
+            # Unchanged unit that has settled to inactive (e.g. clean stop) — try
+            # to bring it back, but DO NOT reset-failed: a genuinely crash-looping
+            # workload must be allowed to latch into `failed` so it surfaces as
+            # Blocked rather than being masked as perpetual "Maintenance" (M2).
             self._systemctl("restart", self.service_name)
 
     def service_running(self) -> bool:
         return self._systemctl("is-active", "--quiet", self.service_name, check=False) == 0
+
+    def service_state(self) -> str:
+        """The systemd ActiveState word: active|inactive|failed|activating|...
+
+        Returns "unknown" if systemctl gives no parseable answer.
+        """
+        out = self._systemctl_output("is-active", self.service_name)
+        return out.strip() or "unknown"
+
+    def service_failed(self) -> bool:
+        """True when the unit has latched into `failed` (e.g. crash-loop hit the
+        start-limit) — the signal the charm surfaces as Blocked."""
+        return self.service_state() == "failed"
 
     def restart(self) -> None:
         self._systemctl("restart", self.service_name)
@@ -165,10 +188,20 @@ class SystemdDriver:
         Path(self.unit_path).unlink(missing_ok=True)
         self._systemctl("daemon-reload", check=False)
 
-    def workload_version(self) -> str:
-        # The binary carries its version in the VERSION env / build ldflags; a
-        # richer probe (HTTP /version) is added with the health features later.
-        return ""
+    def workload_version(self, port: int = norma.DEFAULT_PORT) -> str:
+        """Best-effort workload version via the running server's GET /version.
+
+        Returns the JSON ``version`` field, or "" if the workload is not
+        reachable (not started yet, wrong port, malformed response). Never
+        raises — the caller treats "" as "unavailable".
+        """
+        try:
+            with urllib.request.urlopen(  # localhost only
+                f"http://localhost:{port}/version", timeout=2
+            ) as resp:
+                return str(json.loads(resp.read().decode()).get("version", ""))
+        except (urllib.error.URLError, OSError, ValueError):
+            return ""
 
     def exec_check(self) -> None:
         """Run `<binary> --check` (the workload self-probe); raise on failure."""
@@ -196,3 +229,17 @@ class SystemdDriver:
         except subprocess.CalledProcessError as e:
             raise WorkloadError(f"systemctl {' '.join(args)} failed: {e.stderr.strip()}") from e
         return result.returncode
+
+    def _systemctl_output(self, *args: str) -> str:
+        """Run systemctl and return stdout (never raises; "" on error).
+
+        Used for state queries like ``is-active`` where a non-zero exit (e.g.
+        the unit is ``failed``/``inactive``) still prints the state word we want.
+        """
+        try:
+            result = subprocess.run(
+                ["systemctl", *args], capture_output=True, text=True, check=False
+            )
+        except FileNotFoundError as e:
+            raise WorkloadError("systemctl not found on host") from e
+        return result.stdout or ""

@@ -29,6 +29,8 @@ def _make_ready(monkeypatch, *, running=True):
     monkeypatch.setattr(workload_driver.SystemdDriver, "is_ready", lambda self: True)
     monkeypatch.setattr(workload_driver.SystemdDriver, "apply", lambda self, **kw: None)
     monkeypatch.setattr(workload_driver.SystemdDriver, "service_running", lambda self: running)
+    # Not crash-looped unless a test says so (running=False → Maintenance, not Blocked).
+    monkeypatch.setattr(workload_driver.SystemdDriver, "service_failed", lambda self: False)
 
 
 # ---------------------------------------------------------------------------- #

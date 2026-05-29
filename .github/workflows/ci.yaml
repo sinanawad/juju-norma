@@ -45,11 +45,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Pack charm (+ subordinate)
-        uses: canonical/charming-actions/pack-charm@2.7.0
-        id: pack
-      - name: Pack subordinate
         run: |
           sudo snap install charmcraft --classic
+          charmcraft pack
           cd subordinate && charmcraft pack
 
   integration:

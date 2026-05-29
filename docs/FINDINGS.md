@@ -5,6 +5,25 @@ live-verifying the machine calibration charm on an **LXD** controller
 (`juju 4.0.10`, localhost cloud). Ordered by likely interest. Charm-side bugs we
 introduced are excluded (fixed in-branch); this is about the substrate/engine.
 
+## 0. Intentional test-bed affordances — MUST NOT be copied into a production charm
+
+This is a *sterile calibration* charm: several deliberate choices are safe here
+because the workload is a throwaway HTTP echo, but would be defects in a real
+charm. Flagged so they are never cargo-culted:
+
+- **Unauthenticated `POST /toggle-health`** (`workload/main.go`) — flips the
+  health signal with no auth, bound to all interfaces. It's how F-health is
+  exercised; if `juju expose`d on a real network anyone reachable can flip it.
+  Production: bind to localhost or require auth.
+- **App secret granted to every `calibration-provider` relation**
+  (`charm.py _manage_app_secret`) — intentional for the harness; production
+  grants should be scoped to relations that actually need the secret.
+- **Workload systemd unit runs as root, no sandboxing** (`norma.py
+  build_systemd_unit`) — no `User=`/`NoNewPrivileges=`/`ProtectSystem=`.
+  Acceptable for a sterile binary; add hardening directives for a real workload.
+- **Graceful shutdown is best-effort** — the workload now drains on SIGTERM
+  (`srv.Shutdown`, 5s); fine for `Type=simple`. (Was L6; now addressed.)
+
 ## A. Genuine Juju behaviors worth a doc note or ticket
 
 1. **New relation endpoints / storage-count / lxd-profile bind at DEPLOY, not REFRESH.**

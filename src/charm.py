@@ -128,9 +128,12 @@ class NormaCharm(ops.CharmBase):
         # grafana-agent subordinate (no k8s pull trio). Topology labels are
         # injected by the lib.
         if "cos-agent" in self.meta.relations:
+            # Track the configured workload port (M1): if calibration-int moves,
+            # the scrape target moves with it, instead of hardcoding 8080.
+            workload_port = int(self.config.get("calibration-int", norma.DEFAULT_PORT))
             self._cos_agent = COSAgentProvider(
                 self,
-                metrics_endpoints=[{"path": "/metrics", "port": norma.DEFAULT_PORT}],
+                metrics_endpoints=[{"path": "/metrics", "port": workload_port}],
                 metrics_rules_dir="./src/prometheus_alert_rules",
                 dashboard_dirs=["./src/grafana_dashboards"],
             )
@@ -192,7 +195,10 @@ class NormaCharm(ops.CharmBase):
             self._forced_status = ops.BlockedStatus(error_msg)
             return
 
-        # Secret-type config resolution (F3).
+        # Secret-type config resolution (F3). NOTE: this calibrates secret-URI
+        # *resolution/access*, not delivery — the resolved content is
+        # intentionally not passed to the workload (apply uses env={}). The point
+        # is to exercise that the charm can read a secret-typed config option.
         secret_uri = self.config.get("calibration-secret")
         if secret_uri:
             try:
@@ -218,6 +224,12 @@ class NormaCharm(ops.CharmBase):
             logger.exception("Workload apply failed; will retry on next event")
             return
         self.unit.set_workload_version(version)
+        # Reconcile the opened-port set (M3): open the configured port and close
+        # any stale TCP port left over from a previous calibration-int value, so
+        # reconfiguring the port converges cleanly instead of accumulating opens.
+        for opened in self.unit.opened_ports():
+            if opened.protocol == "tcp" and opened.port != port:
+                self.unit.close_port("tcp", opened.port)
         self.unit.open_port("tcp", port)
 
     # ------------------------------------------------------------------ #
@@ -282,8 +294,16 @@ class NormaCharm(ops.CharmBase):
             return
         try:
             running = self.driver.service_running()
+            # A crash-looping workload latches into systemd `failed` (the apply()
+            # path no longer masks it with reset-failed). Surface that as Blocked
+            # so a permanently-broken workload is reported, not hidden behind an
+            # endless "Starting workload" maintenance message (M2).
+            failed = self.driver.service_failed() if not running else False
         except WorkloadError:
-            running = False
+            running, failed = False, False
+        if failed:
+            event.add_status(ops.BlockedStatus("Workload failed to start"))
+            return
         if not running:
             event.add_status(ops.MaintenanceStatus("Starting workload"))
             return
@@ -354,20 +374,13 @@ class NormaCharm(ops.CharmBase):
 
     def _on_get_config_action(self, event: ops.ActionEvent) -> None:
         event.log("Retrieving configuration")
-        event.set_results(
-            {
-                "calibration-string": str(self.config.get("calibration-string", "default")),
-                "calibration-int": str(self.config.get("calibration-int", norma.DEFAULT_PORT)),
-                "calibration-float": str(self.config.get("calibration-float", 1.0)),
-                "calibration-bool": str(self.config.get("calibration-bool", True)),
-                "calibration-secret": "set" if self.config.get("calibration-secret") else "unset",
-                "bad-behavior-mode": self._bad_mode(),
-            }
-        )
+        # String-coerce the single typed config view (M4: one source of defaults).
+        event.set_results({k: str(v) for k, v in self._collect_config().items()})
 
     def _on_get_version_action(self, event: ops.ActionEvent) -> None:
         event.log("Retrieving version info")
-        workload_version = self.driver.workload_version() if self.driver.is_ready() else ""
+        port = int(self.config.get("calibration-int", norma.DEFAULT_PORT))
+        workload_version = self.driver.workload_version(port) if self.driver.is_ready() else ""
         event.set_results(
             {
                 "charm-version": self._get_charm_version(),
@@ -376,6 +389,13 @@ class NormaCharm(ops.CharmBase):
         )
 
     def _on_set_status_action(self, event: ops.ActionEvent) -> None:
+        """Force a unit status for the F4 calibration check.
+
+        NOTE: the forced status is request-scoped — it is held on the charm
+        instance and reported by collect_unit_status in the SAME dispatch, then
+        forgotten. The next reconcile recomputes status from real state. This is
+        intentional (no StoredState); it is not meant to persist across hooks.
+        """
         event.log("Setting forced status")
         status_name = event.params.get("status", "")
         message = event.params.get("message", "")
@@ -743,10 +763,14 @@ class NormaCharm(ops.CharmBase):
         return {"secret-id": secret_id or "unavailable", "has-secret": bool(secret_id)}
 
     def _collect_goal_state(self) -> dict:
+        # ops exposes no public goal-state API, so we reach the hook tool through
+        # the private backend. Fragile across ops versions — guarded broadly and
+        # degrades to "unavailable" rather than failing introspection. Revisit if
+        # ops adds a public goal-state accessor.
         try:
             raw = self.model._backend._run_tool("goal-state", "--format", "json")
             return json.loads(raw)
-        except Exception:
+        except Exception:  # introspection must never crash
             return {"status": "unavailable", "reason": "goal-state hook tool not accessible"}
 
     # ------------------------------------------------------------------ #
@@ -884,11 +908,14 @@ class NormaCharm(ops.CharmBase):
             return False
 
     def _config_dict(self) -> dict:
+        # Underscore-keyed view for norma.validate_config, derived from the single
+        # typed source (_collect_config) so defaults live in exactly one place (M4).
+        typed = self._collect_config()
         return {
-            "calibration_string": self.config.get("calibration-string", "default"),
-            "calibration_int": int(self.config.get("calibration-int", norma.DEFAULT_PORT)),
-            "calibration_float": float(self.config.get("calibration-float", 1.0)),
-            "calibration_bool": self.config.get("calibration-bool", True),
+            "calibration_string": typed["calibration-string"],
+            "calibration_int": typed["calibration-int"],
+            "calibration_float": typed["calibration-float"],
+            "calibration_bool": typed["calibration-bool"],
         }
 
     def _log_event(self, event_name: str, extra: dict[str, str] | None = None) -> None:
