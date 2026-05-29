@@ -20,7 +20,7 @@ meta:
 ## 1.5 4.0-verified facts (authoritative; re-grepped on v4.0.10-242)
 - hook kinds (domain/deployment/charm/hooks/hooks.go:18-104): install,start,config-changed,upgrade-charm,stop,remove,leader-elected,leader-deposed,update-status,secret-{changed,expired,remove,rotate},relation-{created,joined,changed,departed,broken},storage-{attached,detaching},pebble-{custom-notice,ready,check-failed,check-recovered}. NO series-upgrade, NO collect-metrics/meter-status (gone vs 3.6).
 - charm meta relocated → domain/deployment/charm/meta.go: ScopeContainer="container" (:38), Subordinate (:263), subordinate-must-have-container-relation validation (:744). subordinate feature INTACT in 4.0.
-- constraints (core/constraints/constraints.go:23-39) UNCHANGED: arch,container,cores,cpu-power,mem,root-disk,tags,instance-type,spaces,virt-type,zones,allocate-public-ip,image-id.
+- constraints (core/constraints/constraints.go:23-39) UNCHANGED: arch,container,cores,cpu-power,mem,root-disk,root-disk-source,tags,instance-type,instance-role,spaces,virt-type,zones,allocate-public-ip,image-id. (LXD honors arch,cores,mem,root-disk,root-disk-source,virt-type,zones; rest = real-IAAS only — see PLAN F13.)
 - bases (core/base/supportedbases.go): 20.04,22.04,24.04,**26.04** all supported in 4.0 (26.04 is live NOW, not "eventually"; 28.04 absent). => single-base 24.04 now, trivially expandable to 26.04.
 - jujuc hook tools server.go present at same path; payload-* tools ABSENT (C7).
 - live CLI (4.0.6) present: bind, expose, unexpose, integrate(relate), add-storage, attach-storage. absent: upgrade-machine, upgrade-series, payloads.
@@ -42,7 +42,7 @@ legend: MO=machine-only(no k8s equiv) · X=shared-with-k8s · [REMOVED-4.0]=excl
 - MO networking: spaces + endpoint bindings (`juju bind`), `extra-bindings` (space bind not tied to relation), `juju expose` direct (k8s needs juju-external-hostname).
 - MO constraints: virt-type,instance-type,root-disk,root-disk-source,zones,tags,allocate-public-ip,image-id,container,spaces,cores,cpu-power,mem,arch (core/constraints/constraints.go). placement `--to N`,`--to lxd:N`,`--to zone=` (lxd/kvm container scopes).
 - MO subordinate charms: `subordinate:true` + container-scoped relation (`scope:container`), universal `juju-info` iface. BIGGEST machine-only feature. principal+subordinate colocate on one machine. (k8s subordinate placement broken in 4.0 per JUJU.md)
-- MO lxd-profile.yaml: charm-root file applied to hosting LXD container. whitelist devices unix-char/unix-block/gpu/usb; blacklist config boot*/limits*/migration* (core/lxdprofile/profile.go:42 ValidateConfigDevices). exercise via `--to lxd:0`.
+- MO lxd-profile.yaml: charm-root file applied to hosting LXD container. whitelist devices unix-char/unix-block/gpu/usb; blacklist config boot*/limits*/migration* (4.0: domain/deployment/charm/lxdprofile.go:54-70 — NOT the 3.6 core/lxdprofile/profile.go path; M3). exercise via `--to lxd:0`.
 - MO payloads: [REMOVED-4.0 CONFIRMED — C7] gone in 4.0 (no tools, no CLI). EXCLUDE.
 - MO debug ergonomics: real shell for `juju ssh`/`juju debug-hooks` (vs chiselled k8s ROCK). since 3.6.19 `juju ssh unit cmd` needs `--pty=true`.
 
@@ -50,7 +50,7 @@ legend: MO=machine-only(no k8s equiv) · X=shared-with-k8s · [REMOVED-4.0]=excl
 - relations provides/requires/peers + 5 relation hooks + relation-get/set/ids/list/model-get.
 - leadership is-leader/leader-get/leader-set.
 - secrets: secret-changed/expired/remove/rotate hooks + add/set/remove/get/info-get/grant/revoke/ids tools. vault backend.
-- actions (key=value in 4.0, not --params). goal-state, state-get/set/delete, application-version-set, status-set/get.
+- actions: prefer `key=value` args in 4.0; `--params <file>` ALSO still supported (both coexist, cmd/juju/action/run.go — m1). goal-state, state-get/set/delete, application-version-set, status-set/get.
 
 ### COS observability (MAJOR structural diff)
 - k8s=PULL: prometheus_scrape + grafana_dashboard + loki_push_api (3 relations, COS scrapes charm).
@@ -102,8 +102,8 @@ legend: MO=machine-only(no k8s equiv) · X=shared-with-k8s · [REMOVED-4.0]=excl
 - ~55-60% A reusable-as-is: event ledger, defer-gate, config validate, peer/relation data, secrets, WHOLE bad-behavior test-bed, version-file, networking action, most introspect collectors, ~9 read-only actions.
 - ~25-30% B adapt-behind-driver: reconcile workload body, status ready-gate, storage/health/security/run-check/version-workload actions.
 - ~12-18% C k8s-only-drop: Pebble layers, test-pebble-ops, trigger-notice, secondary-container/OCI, pebble-* events, k8s-API cred probe.
-- NET ~80-85% of LOGIC reusable. seam already exists: norma.py is ops-free.
-- SEAM: `WorkloadDriver` protocol (ops-free, over primitives): is_ready/apply(port,version,env)/workload_version/open_port/file ops/service_running/restart/set_health/workload_ids. PebbleDriver(k8s) + SystemdDriver(machine). add `build_systemd_unit(port,version,env)` mirroring `build_pebble_layer` signature.
+- NET ~80-85% of LOGIC reusable BY COPY/ADAPT from sibling source (NOT by import — separate repo, no shared lib yet). the ops-free `norma.py` boundary makes the extraction clean, but the code must be copied into this repo's norma_common, not referenced.
+- SEAM (M2 — NET-NEW, does NOT exist in sibling): define a `WorkloadDriver` protocol (ops-free, over primitives): is_ready/apply(port,version,env)/workload_version/open_port/file ops/service_running/restart/set_health/workload_ids. This repo implements `SystemdDriver`. The sibling currently calls Pebble DIRECTLY (no PebbleDriver class exists there) — so the protocol + SystemdDriver are new abstraction work here, not a port. add `build_systemd_unit(port,version,env)` mirroring the sibling's `build_pebble_layer` signature.
 
 ## 7. CI consolidation + gaps (mission: regression guard)
 - CONSOLIDATION: 1 norma-machine charm replaces ~12 in-tree machine test charms (mirrors k8s 8->1):
