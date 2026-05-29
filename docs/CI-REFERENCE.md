@@ -47,16 +47,36 @@ sibling's `ci.yaml` is the better model. Adopt:
    [unit, pack, build-rock]. We have needs but should keep integration gated on
    [unit, pack, workload-build].
 
-## Known limitation carried over from the sibling (not yet solved anywhere)
+## Per-PR live LXD acceptance — what actually runs where (corrected)
 
-- **Integration is `workflow_dispatch`-only** in BOTH repos. The sibling's comment
-  is explicit: the suite is too expensive (~10 min on 3.6, ~50 min on 4.0) for
-  every PR, and a GitHub-hosted runner can't cheaply provide the substrate. For
-  us this is worse: `virt-type=virtual-machine` (F13) needs nested virt that a
-  stock `ubuntu-24.04` GH runner lacks. So even when we flesh out the jubilant
-  suite, **per-PR live LXD acceptance needs a self-hosted/LXD-capable runner** —
-  this is the real "regression guard in CI" work, tracked separately, and is the
-  one piece neither charm has fully solved (see review finding #1/#2).
+Earlier framing ("a GH runner can't run LXD") was an OVERSTATEMENT. Reality:
+
+- **LXD *containers* run fine on a stock `ubuntu-24.04` GitHub-hosted runner.**
+  `canonical/setup-lxd` (or `charmed-kubernetes/actions-operator` with
+  `provider: lxd`) installs the LXD snap + `lxd init --auto` and bootstraps Juju.
+  This covers the container-based majority of features (F1–F12, F14, F16–F22).
+- Only two cases genuinely need more than a stock runner:
+  - **`virt-type=virtual-machine` (F13)** — LXD VMs need `/dev/kvm`; GH runners
+    have no nested virt.
+  - **nested `--to lxd:N` (F15)** — needs container nesting (the localhost-LXD
+    limitation we already documented in PROGRESS/FINDINGS).
+
+So we run live acceptance at **two tiers** (this is the improvement over the
+sibling, which is `workflow_dispatch`-only at one tier):
+
+1. **`smoke-integration` (per-PR, `ci.yaml`)** — `make integration-smoke`
+   (`pytest -m smoke`) on a stock runner with LXD containers via
+   `actions-operator`. Currently the deploy→active/idle check; grow it with more
+   `@pytest.mark.smoke` container-only cases (config, actions, relations, secrets,
+   storage-filesystem, expose). This is the real per-PR regression guard and it
+   needs **no** special runner or secrets.
+2. **`integration` (`workflow_dispatch`, `ci.yaml`)** — the full F1–F22 suite,
+   including the KVM/nesting cases. This tier benefits from a self-hosted /
+   nested-virt runner; until one exists, run it manually. Keep the
+   container-safe cases unmarked-but-included here too.
+
+Net: the only thing that still wants a richer runner is the **VM/nesting subset**,
+not "LXD in CI" wholesale.
 
 ## Suggestions for improvement (beyond parity)
 

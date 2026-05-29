@@ -29,8 +29,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.mark.smoke
 def test_deploy_active_idle():
-    """Deploy the charm with its file resource and reach active/idle."""
+    """Deploy the charm with its file resource and reach active/idle.
+
+    Marked ``smoke``: container-only, so it runs per-PR on a stock LXD runner
+    (`make integration-smoke`). The full F1-F22 suite (incl. cloud/VM-only cases)
+    stays unmarked and runs via workflow_dispatch on a richer runner.
+    """
     charm = _charm_path()
     with jubilant.temp_model() as juju:
         juju.deploy(charm, resources={"norma-bin": str(WORKLOAD_BIN)})

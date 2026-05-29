@@ -43,3 +43,6 @@ show_missing = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "lib"]
+markers = [
+    "smoke: container-only integration tests runnable per-PR on a stock LXD runner",
+]
