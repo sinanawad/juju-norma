@@ -27,7 +27,7 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 | P2 | F6 | peers + leadership | DONE | get-cluster-info is-leader/unit-count/leader; peer databag write+idempotent |
 | P2 | F18 | event-deferral (defer-gate) | DONE | test-defer arm→config-changed deferred(ledger deferred:true)+re-emitted |
 | P2 | F19 | introspect (machine: systemd-service collector) | DONE | introspect → 10 sections incl systemd-service{binary-present,service-running,unit-file} |
-| P2 | F20 | bad-behavior test-bed | DONE | active-with-message/blocked-no-message/stuck-maintenance render violating status; reset→active (hook-error/stuck-dying error+resolve still to verify live) |
+| P2 | F20 | bad-behavior test-bed | DONE | status modes render violating status; hook-error → workload error → set none + `juju resolve` → active (verified live) |
 | P3 | F7 | provides/requires self-relate (calibration iface) | DONE | 2 apps (same charm) integrated; provider sees provider+requirer unit data both ways |
 | P3 | F8 | app-databag mode | DONE | leader app bag {app-name,role,planned-units} propagates on both ends |
 | P3 | F17 | upgrade-charm + version | DONE | refresh→rev3; charm-version stamped; upgrade-charm count=3 in ledger |
@@ -102,6 +102,8 @@ _(appended as discovered; feeds the final report)_
   `try/except ops.ModelError` (Constitution VII — reconcile must not crash on a normal
   teardown event). Regression tests added (test_relations TestRelationTeardown). This is
   a realistic machine-charm trap (relation-get is restricted during teardown).
+  **Live-proven fixed:** a fresh provider (nfix) stayed active/idle through the
+  removal of its requirer (nreq) — the exact scenario that crashed all units pre-fix.
 
 ## Limitations (juju-bug, env, or cloud-only; feature partial/skipped on LXD)
 
