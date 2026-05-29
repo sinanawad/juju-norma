@@ -115,6 +115,16 @@ actions:
         default: Intentional failure for testing
   get-peer-data:
     description: Return peer relation data from all units.
+  get-relation-data:
+    description: Return relation data for a specific endpoint (app + unit databags).
+    params:
+      endpoint:
+        type: string
+        description: Relation endpoint name.
+      relation-id:
+        type: integer
+        description: Specific relation ID (optional; all if omitted).
+    required: [endpoint]
   get-cluster-info:
     description: Return cluster membership information.
   run-check:

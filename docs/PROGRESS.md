@@ -28,9 +28,9 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 | P2 | F18 | event-deferral (defer-gate) | DONE | test-defer arm→config-changed deferred(ledger deferred:true)+re-emitted |
 | P2 | F19 | introspect (machine: systemd-service collector) | DONE | introspect → 10 sections incl systemd-service{binary-present,service-running,unit-file} |
 | P2 | F20 | bad-behavior test-bed | DONE | active-with-message/blocked-no-message/stuck-maintenance render violating status; reset→active (hook-error/stuck-dying error+resolve still to verify live) |
-| P3 | F7 | provides/requires self-relate (calibration iface) | TODO | |
-| P3 | F8 | app-databag mode | TODO | |
-| P3 | F17 | upgrade-charm + version | TODO | |
+| P3 | F7 | provides/requires self-relate (calibration iface) | DONE | 2 apps (same charm) integrated; provider sees provider+requirer unit data both ways |
+| P3 | F8 | app-databag mode | DONE | leader app bag {app-name,role,planned-units} propagates on both ends |
+| P3 | F17 | upgrade-charm + version | DONE | refresh→rev3; charm-version stamped; upgrade-charm count=3 in ledger |
 | P4 | F9 | scaling + cluster-info | TODO | |
 | P4 | F10 | secrets full lifecycle (rotate/expire) | TODO | |
 | P4 | F11 | block + filesystem storage + dynamic attach/detach | TODO | |

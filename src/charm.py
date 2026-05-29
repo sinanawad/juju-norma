@@ -107,6 +107,7 @@ class NormaCharm(ops.CharmBase):
         self.framework.observe(self.on.set_status_action, self._on_set_status_action)
         self.framework.observe(self.on.fail_action_action, self._on_fail_action)
         self.framework.observe(self.on.get_peer_data_action, self._on_get_peer_data_action)
+        self.framework.observe(self.on.get_relation_data_action, self._on_get_relation_data_action)
         self.framework.observe(self.on.get_cluster_info_action, self._on_get_cluster_info_action)
         self.framework.observe(self.on.run_check_action, self._on_run_check_action)
         self.framework.observe(self.on.test_networking_action, self._on_test_networking_action)
@@ -362,6 +363,23 @@ class NormaCharm(ops.CharmBase):
             {"app-data": json.dumps(dict(peer.data[self.app])), "unit-data": json.dumps(unit_data)}
         )
 
+    def _on_get_relation_data_action(self, event: ops.ActionEvent) -> None:
+        """Return relation data for an endpoint: our app databag + all unit databags (F7/F8)."""
+        event.log("Retrieving relation data")
+        endpoint = event.params.get("endpoint", "")
+        rel_id_filter = event.params.get("relation-id")
+        relations = self.model.relations.get(endpoint, [])
+        if rel_id_filter is not None:
+            relations = [r for r in relations if r.id == rel_id_filter]
+        result = []
+        for rel in relations:
+            app_data = dict(rel.data[self.app]) if self.unit.is_leader() else {}
+            units = {self.unit.name: dict(rel.data[self.unit])}
+            for unit in rel.units:
+                units[unit.name] = dict(rel.data[unit])
+            result.append({"id": rel.id, "app-data": app_data, "units": units})
+        event.set_results({"relations": json.dumps(result)})
+
     def _on_get_cluster_info_action(self, event: ops.ActionEvent) -> None:
         event.log("Retrieving cluster info")
         peer = self.model.get_relation("norma-peers")
@@ -604,10 +622,23 @@ class NormaCharm(ops.CharmBase):
                 )
         for endpoint in ("calibration-provider", "calibration-requirer"):
             for rel in self.model.relations.get(endpoint, []):
+                if rel == broken_relation:
+                    continue
                 self._write_if_changed(
                     rel.data[self.unit],
                     {"unit-name": self.unit.name, "role": endpoint.split("-")[-1]},
                 )
+                # F8 app-databag mode: only the leader writes the app-scope bag;
+                # it propagates to every unit on both ends of the relation.
+                if self.unit.is_leader():
+                    self._write_if_changed(
+                        rel.data[self.app],
+                        {
+                            "app-name": self.app.name,
+                            "role": endpoint.split("-")[-1],
+                            "planned-units": str(self.app.planned_units()),
+                        },
+                    )
         self._inject_bad_relation_data(broken_relation)
 
     @staticmethod
