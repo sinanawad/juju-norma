@@ -29,6 +29,9 @@ parts:
     override-build: |
       craftctl default
       git describe --always > $CRAFT_PART_INSTALL/version
+      # charmcraft 4.x + uv plugin does not auto-prime lxd-profile.yaml (F15);
+      # copy it into the charm root explicitly so Juju applies it (machine-only).
+      cp $CRAFT_PART_SRC/lxd-profile.yaml $CRAFT_PART_INSTALL/lxd-profile.yaml
 
 # Workload delivery (D2): the compiled Go binary is attached as a file
 # resource and laid down on the host by the install hook via resource-get.
@@ -168,6 +171,10 @@ actions:
         type: boolean
         description: true to arm deferral, false to disarm.
         default: true
+  test-workload-ops:
+    description: |
+      Run the full host workload-ops suite (systemd service control + file
+      operations + subprocess) — the machine analogue of the k8s test-pebble-ops.
   introspect:
     description: Return a comprehensive structured report of all internal charm state.
     params:

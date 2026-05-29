@@ -70,6 +70,10 @@ class WorkloadDriver(Protocol):
         """Best-effort workload version, or "" if unavailable."""
         ...
 
+    def exec_check(self) -> None:
+        """Run the workload's --check self-probe; raise WorkloadError on failure."""
+        ...
+
 
 class SystemdDriver:
     """Drive the Norma workload via a charm-managed systemd unit.
@@ -165,6 +169,17 @@ class SystemdDriver:
         # The binary carries its version in the VERSION env / build ldflags; a
         # richer probe (HTTP /version) is added with the health features later.
         return ""
+
+    def exec_check(self) -> None:
+        """Run `<binary> --check` (the workload self-probe); raise on failure."""
+        try:
+            subprocess.run(
+                [self.binary_path, "--check"], capture_output=True, text=True, check=True
+            )
+        except FileNotFoundError as e:
+            raise WorkloadError(f"binary not found at {self.binary_path}") from e
+        except subprocess.CalledProcessError as e:
+            raise WorkloadError(f"workload --check failed: {e.stderr.strip()}") from e
 
     # -- internals -----------------------------------------------------------
 

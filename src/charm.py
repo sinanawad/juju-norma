@@ -119,6 +119,7 @@ class NormaCharm(ops.CharmBase):
         self.framework.observe(self.on.test_networking_action, self._on_test_networking_action)
         self.framework.observe(self.on.check_security_action, self._on_check_security_action)
         self.framework.observe(self.on.test_defer_action, self._on_test_defer_action)
+        self.framework.observe(self.on.test_workload_ops_action, self._on_test_workload_ops_action)
         self.framework.observe(self.on.introspect_action, self._on_introspect_action)
 
     # ------------------------------------------------------------------ #
@@ -561,6 +562,69 @@ class NormaCharm(ops.CharmBase):
                 "previous-state": str(previous).lower(),
             }
         )
+
+    def _on_test_workload_ops_action(self, event: ops.ActionEvent) -> None:
+        """F5b: machine analogue of test-pebble-ops — systemd + file + subprocess suite."""
+        event.log("Running workload-ops suite")
+        import shutil
+        import tempfile
+
+        results: dict[str, str] = {}
+        passed = 0
+        total = 0
+
+        def run_op(name: str, fn) -> None:
+            nonlocal passed, total
+            total += 1
+            try:
+                fn()
+                results[name] = "pass"
+                passed += 1
+            except Exception as e:  # each op records its own failure
+                results[name] = f"fail: {e}"
+
+        tmpdir = tempfile.mkdtemp(prefix="norma-ops-")
+        testfile = os.path.join(tmpdir, "ops.txt")
+
+        def op_file_write() -> None:
+            with open(testfile, "w") as f:
+                f.write("norma-ops")
+
+        def op_file_read() -> None:
+            with open(testfile) as f:
+                assert f.read() == "norma-ops"
+
+        def op_file_exists() -> None:
+            assert os.path.exists(testfile)
+
+        def op_file_remove() -> None:
+            os.remove(testfile)
+            assert not os.path.exists(testfile)
+
+        def op_service_status() -> None:
+            self.driver.service_running()  # exercises systemctl is-active
+
+        def op_service_restart() -> None:
+            if not self.driver.is_ready():
+                raise AssertionError("workload binary not delivered")
+            self.driver.restart()
+
+        def op_binary_check() -> None:
+            if not self.driver.is_ready():
+                raise AssertionError("workload binary not delivered")
+            self.driver.exec_check()
+
+        run_op("file-write", op_file_write)
+        run_op("file-read", op_file_read)
+        run_op("file-exists", op_file_exists)
+        run_op("file-remove", op_file_remove)
+        run_op("service-status", op_service_status)
+        run_op("service-restart", op_service_restart)
+        run_op("binary-check", op_binary_check)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+        results["summary"] = f"{passed}/{total} passed"
+        event.set_results(results)
 
     # ------------------------------------------------------------------ #
     #  Introspect (F19) + collectors                                      #

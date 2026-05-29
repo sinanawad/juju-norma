@@ -36,10 +36,10 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 | P4 | F11 | filesystem storage + dynamic attach/detach | DONE | check-storage marker+writable; fresh app: add-storage data/5 → detach → attach cycle ✓ |
 | P4 | F11b | block storage | LIMITATION | LXD provider rejects block charm storage ("pool does not support charm storage block") — needs MAAS/cloud |
 | P4 | F12 | networking: open-port/expose | DONE | open-port 8080/tcp; `juju expose` → status exposed=True; bindings via test-networking |
-| P5 | F14 | subordinate mode (juju-info, container scope) | TODO | |
-| P5 | F15 | lxd-profile.yaml | TODO | |
+| P5 | F14 | subordinate mode (juju-info, container scope) | DONE | separate subordinate charm; integrate juju-info → 3 subs colocated 1-per-principal-machine; get-principal → juju-norma/2 |
+| P5 | F15 | lxd-profile.yaml | PARTIAL | artifact shipped + charmcraft packaging bug fixed (now in .charm); application NOT verifiable on localhost LXD — top-level machines don't get the charm profile (unique linux.kernel_modules marker absent), and `--to lxd:N` nested containers fail to provision (agent:lost). Needs real LXD host / MAAS → ROADMAP |
 | P5 | F16 | cos-agent push observability | TODO | |
-| P5 | F5b | test-workload-ops action (systemd/file/subprocess) | TODO | |
+| P5 | F5b | test-workload-ops action (systemd/file/subprocess) | DONE | live 7/7: file-write/read/exists/remove + service-status/restart + binary-check |
 | P6 | F12s | spaces / bindings (LXD = alpha only) | TODO | likely PARTIAL/ROADMAP on LXD |
 | P6 | F13 | machine constraints + placement | TODO | LXD honors arch,cores,mem,root-disk,virt-type,zones |
 | P7 | — | CI (lint/unit/pack/integration-LXD), README, dashboards/alert-rules | TODO | |
@@ -69,6 +69,22 @@ _(appended as discovered; feeds the final report)_
   `systemctl restart norma failed: Job for norma.service failed` during a refresh, then
   auto-recovered (idempotent apply `reset-failed`+retry); unit reached active. Watch for
   reproducibility; currently self-healing, not blocking.
+- **[charmcraft] lxd-profile.yaml not auto-primed with the uv plugin** — charmcraft
+  4.2.1 did NOT include the charm-root `lxd-profile.yaml` in the packed `.charm` when
+  the part uses the `uv` plugin + a custom `override-build`. Confirmed via `unzip -l`.
+  Fix: explicitly `cp $CRAFT_PART_SRC/lxd-profile.yaml $CRAFT_PART_INSTALL/` in
+  override-build (same pattern the k8s sibling uses for icon.svg). Worth a charmcraft
+  docs/bug note — auto-inclusion of recognized charm files appears plugin-dependent.
+- **[juju/env] charm lxd-profile not applied on localhost LXD; nested lxd:N fails** —
+  with lxd-profile.yaml correctly packaged, a fresh top-level deploy did NOT apply the
+  charm profile (no `juju-<model>-<app>-<rev>` profile; unique `linux.kernel_modules`
+  marker absent — though baseline `security.nesting=true` is present model-wide). The
+  PLAN-prescribed `--to lxd:N` nested placement never provisioned the nested machine
+  (`6/lxd/0` never registered; unit `agent:lost`). So F15 application needs a real LXD
+  host (non-nested) or MAAS. Charm-side (the shipped, valid lxd-profile.yaml) is complete.
+- **[juju] lxd-profile / storage-count bind at deploy, not refresh** — a refresh that
+  adds lxd-profile.yaml or widens storage count does NOT apply to already-running units;
+  a fresh deploy is required. Consistent across both features.
 - **[note] secret rotate/expire live dispatch is time-gated** — rotation policy is
   monthly (Juju minimum is coarse); the rotate/expired/remove HANDLERS are unit-verified
   (Scenario) and hardened to never crash teardown. Live hook dispatch needs elapsed time.

@@ -1,0 +1,44 @@
+type: charm
+name: juju-norma-subordinate
+title: Juju Norma Subordinate Calibration Charm
+summary: Machine-only subordinate that calibrates juju-info container-scoped relations.
+description: |
+  A minimal SUBORDINATE calibration charm (machine-only): it deploys onto an
+  existing principal's machine via a container-scoped `juju-info` relation and
+  reports its principal. `subordinate: true` is static charm metadata (it cannot
+  be config-toggled), which is why this is a separate build target from the
+  principal juju-norma charm (SYNTHESIS A5). Pairs with juju-norma:juju-info.
+
+base: ubuntu@24.04
+platforms:
+  amd64:
+  arm64:
+
+assumes:
+  - juju >= 4.0
+
+subordinate: true
+
+parts:
+  norma-sub-charm:
+    plugin: uv
+    source: .
+    build-packages: [git]
+    build-snaps: [astral-uv]
+    override-build: |
+      craftctl default
+      # Packed from a subdir (no .git in the build instance), so guard describe.
+      (git describe --always 2>/dev/null || echo "0.1.0") > $CRAFT_PART_INSTALL/version
+
+requires:
+  juju-info:
+    interface: juju-info
+    scope: container
+
+actions:
+  get-principal:
+    description: Report the principal unit this subordinate is colocated with.
+
+links:
+  source:
+    - https://github.com/sinanawad/juju-norma

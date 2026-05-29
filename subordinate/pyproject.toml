@@ -1,0 +1,21 @@
+[project]
+name = "juju-norma-subordinate"
+version = "0.1.0"
+description = "Machine subordinate calibration charm (juju-info container scope)"
+requires-python = ">=3.10"
+dependencies = [
+    "ops",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 99
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
