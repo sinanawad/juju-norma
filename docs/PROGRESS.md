@@ -21,13 +21,13 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 | P0 | — | scaffold (charmcraft/pyproject/uv/Makefile/workload/norma.py/driver/charm skeleton/tests) | DONE | lint+unit green; `charmcraft pack` → juju-norma_amd64.charm |
 | P1 | F1 | lifecycle + systemd workload | DONE | deploy → active/idle; `systemctl is-active norma`→active; `/health`→OK |
 | P1 | F2 | workload via file resource | DONE | `--resource norma-bin=./norma` laid to /usr/local/bin/norma 0755; idempotent apply (no restart storm) |
-| P2 | F3 | typed config (string/int/float/bool/secret) | TODO | |
-| P2 | F4 | status priority + Active-empty | TODO | |
-| P2 | F5 | actions (class-A + machine workload-ops) | TODO | |
-| P2 | F6 | peers + leadership | TODO | |
-| P2 | F18 | event-deferral (defer-gate) | TODO | |
-| P2 | F19 | introspect (machine: drop containers, add systemd collector) | TODO | |
-| P2 | F20 | bad-behavior test-bed | TODO | |
+| P2 | F3 | typed config (string/int/float/bool/secret) | DONE | get-config all types; calibration-int=0→blocked→recover; secret resolve/not-found |
+| P2 | F4 | status priority + Active-empty | DONE | blocked>maint>waiting>active; ActiveStatus empty; live blocked/active |
+| P2 | F5 | actions (class-A; machine variants) | DONE | run-check(systemd/config/unknown), check-security(substrate=machine,k8s-api=n/a), test-networking([8080/tcp]+bindings), get-version, set-status, fail, get-event-log |
+| P2 | F6 | peers + leadership | DONE | get-cluster-info is-leader/unit-count/leader; peer databag write+idempotent |
+| P2 | F18 | event-deferral (defer-gate) | DONE | test-defer arm→config-changed deferred(ledger deferred:true)+re-emitted |
+| P2 | F19 | introspect (machine: systemd-service collector) | DONE | introspect → 10 sections incl systemd-service{binary-present,service-running,unit-file} |
+| P2 | F20 | bad-behavior test-bed | DONE | active-with-message/blocked-no-message/stuck-maintenance render violating status; reset→active (hook-error/stuck-dying error+resolve still to verify live) |
 | P3 | F7 | provides/requires self-relate (calibration iface) | TODO | |
 | P3 | F8 | app-databag mode | TODO | |
 | P3 | F17 | upgrade-charm + version | TODO | |
@@ -46,7 +46,15 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 ## Findings / Juju + environment issues
 _(appended as discovered; feeds the final report)_
 
-- None yet.
+- **[env] `juju ssh` needs ssh keys on fresh model** — `add-model` does not seed the
+  user's ssh key; `juju ssh` → `Permission denied (publickey)`. Use `juju exec
+  --unit` for in-unit diagnostics (runs via the agent as root, no ssh key). Not a bug.
+- **[note] dual workload-version source** — `get-version` charm-version comes from
+  charmcraft `git describe` (e.g. `0262427`); the binary's `/version` reports the
+  `-X main.version` ldflag (`0.1.0`). Two sources; align in a later pass.
+- **[note] `re-emitted:true` ledger flag is Scenario-only** — live juju re-emission of
+  a deferred event does not expose `event.deferred`, so the re-emitted marker only
+  appears under ops.testing. Deferral itself (F18) is verified live. Cosmetic.
 
 ## Limitations (juju-bug or cloud-only; feature skipped on LXD)
 _(appended as discovered)_

@@ -69,6 +69,15 @@ config:
     calibration-secret:
       type: secret
       description: Calibration secret config (tests secret URI resolution).
+    bad-behavior-mode:
+      type: string
+      default: "none"
+      description: |
+        Drive a deliberate bad-behavior pattern for calibrating Juju's
+        status/error/teardown handling. 'none' is the well-behaved baseline.
+        Recognised: none, active-with-message, blocked-no-message,
+        stuck-maintenance, status-churn, hook-error, secret-in-relation,
+        stuck-dying. Unknown values fall back to 'none' with a logged warning.
 
 actions:
   get-event-log:
@@ -104,6 +113,35 @@ actions:
         type: string
         description: Failure message.
         default: Intentional failure for testing
+  get-peer-data:
+    description: Return peer relation data from all units.
+  get-cluster-info:
+    description: Return cluster membership information.
+  run-check:
+    description: Validate a specific charm capability and return pass/fail.
+    params:
+      check:
+        type: string
+        description: "Capability to check (e.g. systemd, config, relations)."
+    required: [check]
+  test-networking:
+    description: Report open ports and network binding information.
+  check-security:
+    description: "Report security posture: UID/GID, trust, credentials."
+  test-defer:
+    description: Arm or disarm event deferral for the next eligible event.
+    params:
+      arm:
+        type: boolean
+        description: true to arm deferral, false to disarm.
+        default: true
+  introspect:
+    description: Return a comprehensive structured report of all internal charm state.
+    params:
+      sections:
+        type: string
+        description: "Comma-separated section filter (empty = all sections)."
+        default: ""
 
 peers:
   norma-peers:
