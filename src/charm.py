@@ -18,6 +18,7 @@ import re
 import secrets
 
 import ops
+from charms.grafana_agent.v0.cos_agent import COSAgentProvider
 
 import norma
 from norma_common import badbehavior
@@ -121,6 +122,18 @@ class NormaCharm(ops.CharmBase):
         self.framework.observe(self.on.test_defer_action, self._on_test_defer_action)
         self.framework.observe(self.on.test_workload_ops_action, self._on_test_workload_ops_action)
         self.framework.observe(self.on.introspect_action, self._on_introspect_action)
+
+        # --- COS observability (F16): machine PUSH model via cos-agent ---
+        # ONE relation carries metrics jobs + dashboards + alert rules to a
+        # grafana-agent subordinate (no k8s pull trio). Topology labels are
+        # injected by the lib.
+        if "cos-agent" in self.meta.relations:
+            self._cos_agent = COSAgentProvider(
+                self,
+                metrics_endpoints=[{"path": "/metrics", "port": norma.DEFAULT_PORT}],
+                metrics_rules_dir="./src/prometheus_alert_rules",
+                dashboard_dirs=["./src/grafana_dashboards"],
+            )
 
     # ------------------------------------------------------------------ #
     #  Defer gate (F18) — the ONLY event.defer() in the charm            #

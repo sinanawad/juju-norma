@@ -38,7 +38,7 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 | P4 | F12 | networking: open-port/expose | DONE | open-port 8080/tcp; `juju expose` → status exposed=True; bindings via test-networking |
 | P5 | F14 | subordinate mode (juju-info, container scope) | DONE | separate subordinate charm; integrate juju-info → 3 subs colocated 1-per-principal-machine; get-principal → juju-norma/2 |
 | P5 | F15 | lxd-profile.yaml | PARTIAL | artifact shipped + charmcraft packaging bug fixed (now in .charm); application NOT verifiable on localhost LXD — top-level machines don't get the charm profile (unique linux.kernel_modules marker absent), and `--to lxd:N` nested containers fail to provision (agent:lost). Needs real LXD host / MAAS → ROADMAP |
-| P5 | F16 | cos-agent push observability | TODO | |
+| P5 | F16 | cos-agent push observability | DONE | COSAgentProvider; cos-agent relation to grafana-agent subordinate; provider databag (2862B) carries metrics scrape jobs + NormaWorkload alert rules (KB2) + dashboards. grafana-agent blocked-missing-COS = expected (push model) |
 | P5 | F5b | test-workload-ops action (systemd/file/subprocess) | DONE | live 7/7: file-write/read/exists/remove + service-status/restart + binary-check |
 | P6 | F12s | spaces / bindings (LXD = alpha only) | TODO | likely PARTIAL/ROADMAP on LXD |
 | P6 | F13 | machine constraints + placement | TODO | LXD honors arch,cores,mem,root-disk,virt-type,zones |

@@ -183,6 +183,10 @@ actions:
         description: "Comma-separated section filter (empty = all sections)."
         default: ""
 
+charm-libs:
+  - lib: grafana-agent.cos_agent
+    version: "0"
+
 peers:
   norma-peers:
     interface: norma_peers
@@ -193,6 +197,10 @@ provides:
     optional: true
   juju-info:
     interface: juju-info
+    optional: true
+  cos-agent:
+    interface: cos_agent
+    scope: container
     optional: true
 
 requires:

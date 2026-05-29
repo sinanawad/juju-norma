@@ -1,0 +1,25 @@
+{
+  "title": "Norma Calibration",
+  "uid": "norma-calibration",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Workload healthy",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "norma_healthy", "legendFormat": "{{juju_unit}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "HTTP requests total",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "rate(norma_http_requests_total[5m])", "legendFormat": "{{method}} {{path}}" }
+      ]
+    }
+  ]
+}
