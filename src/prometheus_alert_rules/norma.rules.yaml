@@ -1,0 +1,23 @@
+# Calibration alert rules shipped to the cos-agent (F16 / KB2: the k8s sibling
+# shipped an EMPTY alert-rules dir; here we ship a real rule so alert-rule
+# propagation through cos_agent → grafana-agent can be calibrated). Juju
+# topology labels are injected by the cos_agent lib — do not hardcode them.
+groups:
+  - name: norma_calibration
+    rules:
+      - alert: NormaWorkloadUnhealthy
+        expr: norma_healthy < 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Norma workload reports unhealthy"
+          description: "The norma_healthy gauge has been < 1 for 5m on {{ $labels.juju_unit }}."
+      - alert: NormaWorkloadDown
+        expr: up{juju_charm="juju-norma"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Norma workload metrics endpoint down"
+          description: "Prometheus cannot scrape the norma workload on {{ $labels.juju_unit }}."

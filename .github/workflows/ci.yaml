@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: make lint
+
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: make unit
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: .coverage
+          if-no-files-found: ignore
+
+  workload-build:
+    name: Build workload
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: |
+          cd workload && go vet ./...
+      - name: Build static workload binary
+        run: make build-workload VERSION=ci
+      - name: Upload workload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: workload
+          path: norma
+          if-no-files-found: error
+
+  pack:
+    name: Pack Charm (+ subordinate)
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup LXD
+        uses: canonical/setup-lxd@main
+      - name: Install charmcraft
+        run: sudo snap install charmcraft --classic
+      - name: Fetch charm libs
+        run: charmcraft fetch-libs
+      - name: Pack principal charm
+        run: charmcraft pack
+      - name: Pack subordinate charm
+        run: cd subordinate && charmcraft pack
+      - name: Upload charm artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: charms
+          path: |
+            *.charm
+            subordinate/*.charm
+          if-no-files-found: error
+
+  integration:
+    name: Integration (${{ matrix.juju-channel }})
+    runs-on: ubuntu-24.04
+    needs: [unit, pack, workload-build]
+    # workflow_dispatch-only: the full F1-F22 live-LXD acceptance is too
+    # expensive for every PR, and virt-type=virtual-machine (F13) needs nested
+    # virt a stock GH runner lacks. Per-PR live acceptance needs a
+    # self-hosted/LXD-capable runner (see docs/CI-REFERENCE.md). A cheap smoke
+    # subset (-m smoke) could run per-PR on a plain runner — future work.
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Single 4.0 entry now (locked D5: target 4.0+); structured as a matrix
+        # so adding 4.1 / 26.04 later is a one-line change.
+        juju-channel: ["4.0/stable"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: workload
+      - run: uv sync --extra dev
+      - name: Set up LXD + Juju
+        uses: charmed-kubernetes/actions-operator@main
+        with:
+          provider: lxd
+          juju-channel: ${{ matrix.juju-channel }}
+      - name: Integration (jubilant, LXD)
+        run: make integration
+        timeout-minutes: 80

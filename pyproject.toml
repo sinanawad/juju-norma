@@ -1,0 +1,45 @@
+[project]
+name = "juju-norma"
+version = "0.1.0"
+description = "Juju machine (IAAS/VM) calibration charm exercising machine charm features"
+# Keep the floor at 3.10: the ops-free workload module must stay 3.10-safe
+# (datetime.timezone.utc, not datetime.UTC) for cross-substrate reuse.
+requires-python = ">=3.10"
+dependencies = [
+    "ops",
+    "pyyaml",
+    "cosl>=0.0.50",
+    "pydantic",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ops[testing]",
+    "pytest",
+    "coverage[toml]",
+    "jubilant",
+    "ruff",
+]
+
+[tool.uv]
+# The charm is not an installable package (src/ holds top-level modules, not a
+# package tree); uv only manages the dependency environment.
+package = false
+
+[tool.ruff]
+line-length = 99
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "lib"]

@@ -1,0 +1,216 @@
+type: charm
+name: juju-norma
+title: Juju Machine Calibration Charm
+summary: A machine (IAAS/VM) calibration charm to exercise Juju machine features.
+description: |
+  A comprehensive calibration charm for Juju CI that exercises the features and
+  capabilities relevant to MACHINE (IAAS/VM) charms — the machine-substrate
+  sibling of juju-norma-k8s. There is no Pebble, no workload container and no
+  OCI image: the Norma Go workload is delivered as a charm file resource and
+  supervised directly on the host under a charm-managed systemd unit. Each
+  feature is testable independently via dedicated actions and the Juju CLI.
+
+# Single base for now; designed to expand to ubuntu@26.04 (live in Juju 4.0).
+base: ubuntu@24.04
+platforms:
+  amd64:
+  arm64:
+
+# Machine charm: declare the minimum Juju version and MUST NOT assume k8s-api.
+assumes:
+  - juju >= 4.0
+
+parts:
+  norma-charm:
+    plugin: uv
+    source: .
+    build-packages: [git]
+    build-snaps: [astral-uv]
+    override-build: |
+      craftctl default
+      git describe --always > $CRAFT_PART_INSTALL/version
+      # charmcraft 4.x + uv plugin does not auto-prime lxd-profile.yaml (F15);
+      # copy it into the charm root explicitly so Juju applies it (machine-only).
+      cp $CRAFT_PART_SRC/lxd-profile.yaml $CRAFT_PART_INSTALL/lxd-profile.yaml
+
+# Workload delivery (D2): the compiled Go binary is attached as a file
+# resource and laid down on the host by the install hook via resource-get.
+# NO oci-image resource — that is k8s-only.
+resources:
+  norma-bin:
+    type: file
+    filename: norma
+    description: |
+      Statically compiled (CGO_ENABLED=0) Norma calibration Go binary. Built
+      with `make build-workload`; attached with
+      `juju deploy ./juju-norma_amd64.charm --resource norma-bin=./norma`.
+
+storage:
+  data:
+    type: filesystem
+    minimum-size: 1G
+    multiple:
+      range: 1-5
+    description: |
+      Calibration data directory, mounted by Juju on the host. Multiple range
+      1-5 so dynamic add-storage / detach-storage / attach-storage (IAASOnly,
+      machine-distinct — blocked on k8s) can be exercised on instances >1.
+  blk:
+    type: block
+    minimum-size: 1G
+    multiple:
+      range: 0-1
+    description: |
+      Optional raw block device (machine-only; k8s charms cannot take block).
+      Provisionability depends on the LXD storage pool — exercised dynamically
+      via `juju add-storage`. Reported (not auto-formatted) by check-storage.
+
+config:
+  options:
+    calibration-string:
+      type: string
+      default: "default"
+      description: Calibration string config (tests string type handling).
+    calibration-int:
+      type: int
+      default: 8080
+      description: Calibration integer config (tests int type, also workload port).
+    calibration-float:
+      type: float
+      default: 1.0
+      description: Calibration float config (tests float type handling).
+    calibration-bool:
+      type: boolean
+      default: true
+      description: Calibration boolean config (tests boolean type handling).
+    calibration-secret:
+      type: secret
+      description: Calibration secret config (tests secret URI resolution).
+    bad-behavior-mode:
+      type: string
+      default: "none"
+      description: |
+        Drive a deliberate bad-behavior pattern for calibrating Juju's
+        status/error/teardown handling. 'none' is the well-behaved baseline.
+        Recognised: none, active-with-message, blocked-no-message,
+        stuck-maintenance, status-churn, hook-error, secret-in-relation,
+        stuck-dying. Unknown values fall back to 'none' with a logged warning.
+
+actions:
+  get-event-log:
+    description: Return the in-memory event ledger.
+    params:
+      limit:
+        type: integer
+        description: Maximum number of entries to return (0 = all).
+        default: 0
+      event-filter:
+        type: string
+        description: Filter by event name substring (empty = no filter).
+        default: ""
+  get-config:
+    description: Return current effective configuration.
+  get-version:
+    description: Return charm and workload version.
+  set-status:
+    description: Force a specific status condition for testing.
+    params:
+      status:
+        type: string
+        description: "Status type: active, blocked, waiting, maintenance."
+      message:
+        type: string
+        description: Status message (empty for ActiveStatus).
+        default: ""
+    required: [status]
+  fail-action:
+    description: Intentionally fail with a given message (tests error reporting).
+    params:
+      message:
+        type: string
+        description: Failure message.
+        default: Intentional failure for testing
+  get-peer-data:
+    description: Return peer relation data from all units.
+  get-relation-data:
+    description: Return relation data for a specific endpoint (app + unit databags).
+    params:
+      endpoint:
+        type: string
+        description: Relation endpoint name.
+      relation-id:
+        type: integer
+        description: Specific relation ID (optional; all if omitted).
+    required: [endpoint]
+  get-cluster-info:
+    description: Return cluster membership information.
+  get-secret-info:
+    description: Return info about the app-owned calibration secret.
+  check-storage:
+    description: Check storage status and data integrity.
+    params:
+      name:
+        type: string
+        description: "Storage name to check: data (filesystem) or blk (block)."
+        default: data
+  run-check:
+    description: Validate a specific charm capability and return pass/fail.
+    params:
+      check:
+        type: string
+        description: "Capability to check (e.g. systemd, config, relations)."
+    required: [check]
+  test-networking:
+    description: Report open ports and network binding information.
+  check-security:
+    description: "Report security posture: UID/GID, trust, credentials."
+  test-defer:
+    description: Arm or disarm event deferral for the next eligible event.
+    params:
+      arm:
+        type: boolean
+        description: true to arm deferral, false to disarm.
+        default: true
+  test-workload-ops:
+    description: |
+      Run the full host workload-ops suite (systemd service control + file
+      operations + subprocess) — the machine analogue of the k8s test-pebble-ops.
+  introspect:
+    description: Return a comprehensive structured report of all internal charm state.
+    params:
+      sections:
+        type: string
+        description: "Comma-separated section filter (empty = all sections)."
+        default: ""
+
+charm-libs:
+  - lib: grafana-agent.cos_agent
+    version: "0"
+
+peers:
+  norma-peers:
+    interface: norma_peers
+
+provides:
+  calibration-provider:
+    interface: calibration
+    optional: true
+  juju-info:
+    interface: juju-info
+    optional: true
+  cos-agent:
+    interface: cos_agent
+    scope: container
+    optional: true
+
+requires:
+  calibration-requirer:
+    interface: calibration
+    optional: true
+    limit: 1
+
+links:
+  source:
+    - https://github.com/sinanawad/juju-norma
+  issues:
+    - https://github.com/sinanawad/juju-norma/issues

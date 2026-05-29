@@ -1,0 +1,10 @@
+# Machine-only (F15): a charm-shipped LXD profile applied to the hosting LXD
+# container. Config-only (the 4.0 whitelist permits arbitrary config except the
+# boot*/limits*/migration* blacklist; device types are limited to
+# unix-char/unix-block/gpu/usb, so we ship none to stay portable). Exercised via
+# `juju deploy ... --to lxd:N` and observed with `juju show-machine`.
+config:
+  security.nesting: "true"
+  linux.kernel_modules: ip_tables,ip6_tables
+description: juju-norma calibration LXD profile
+devices: {}
