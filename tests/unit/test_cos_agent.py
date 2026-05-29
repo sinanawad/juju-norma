@@ -8,16 +8,8 @@ import json
 
 import ops
 import ops.testing
-import pytest
 
 from charm import NormaCharm
-
-
-@pytest.fixture
-def norma_bin(tmp_path):
-    p = tmp_path / "norma-bin"
-    p.write_bytes(b"")
-    return ops.testing.Resource(name="norma-bin", path=p)
 
 
 class TestCosAgentRelation:

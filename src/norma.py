@@ -36,6 +36,10 @@ STORAGE_CONFIG = {
 LEDGER_FILE = "/tmp/norma-event-ledger.json"
 DEFER_FLAG_FILE = "/tmp/norma-defer-armed"
 
+# Events the defer-gate (F18) never defers: update-status is high-frequency, and
+# relation-broken re-emission fails because the relation is already gone.
+DEFER_SKIP_EVENTS = ("update-status", "relation-broken")
+
 
 def read_event_ledger() -> list[dict]:
     """Read the event ledger from the host filesystem.

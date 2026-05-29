@@ -147,10 +147,7 @@ class NormaCharm(ops.CharmBase):
         deferred (and re-emitted later) instead of reconciling.
         """
         event_name = _event_to_kebab(event)
-        # update-status is high-frequency; relation-broken re-emission fails
-        # because the relation is gone — never defer these.
-        skip = event_name in ("update-status", "relation-broken")
-        if self._defer_armed and not skip:
+        if self._defer_armed and event_name not in norma.DEFER_SKIP_EVENTS:
             self._log_event(event_name, {"deferred": "true"})
             event.defer()
             self._defer_armed = False

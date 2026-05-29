@@ -16,18 +16,9 @@ Action-only events (get-config) do NOT reconcile, so no resource is needed.
 
 import ops
 import ops.testing
-import pytest
 
 import workload_driver
 from charm import NormaCharm
-
-
-@pytest.fixture
-def norma_bin(tmp_path):
-    """Empty placeholder norma-bin resource (treated as not-yet-delivered)."""
-    placeholder = tmp_path / "norma-bin"
-    placeholder.write_bytes(b"")
-    return ops.testing.Resource(name="norma-bin", path=placeholder)
 
 
 class TestGetConfigAction:

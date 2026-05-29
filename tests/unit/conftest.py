@@ -14,6 +14,7 @@ themselves, which overrides this default for the duration of that test.
 
 import types
 
+import ops.testing
 import pytest
 
 import norma
@@ -28,3 +29,18 @@ def _no_host_side_effects(tmp_path, monkeypatch):
     monkeypatch.setattr(workload_driver.subprocess, "run", _fake_run)
     monkeypatch.setattr(norma, "LEDGER_FILE", str(tmp_path / "ledger.json"))
     monkeypatch.setattr(norma, "DEFER_FLAG_FILE", str(tmp_path / "defer"))
+
+
+@pytest.fixture
+def norma_bin(tmp_path):
+    """Empty placeholder norma-bin file resource.
+
+    A deployed charm always has the file resource declared; an empty file is the
+    realistic "not yet attached" placeholder (resource-get returns a zero-byte
+    file), which the charm treats as "binary not delivered". Any event that runs
+    the reconciler calls ``resources.fetch("norma-bin")``, so State for such an
+    event must declare this resource.
+    """
+    placeholder = tmp_path / "norma-bin"
+    placeholder.write_bytes(b"")
+    return ops.testing.Resource(name="norma-bin", path=placeholder)

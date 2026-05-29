@@ -16,19 +16,6 @@ import workload_driver
 from charm import NormaCharm
 
 
-@pytest.fixture
-def norma_bin(tmp_path):
-    """An empty placeholder norma-bin file resource.
-
-    A deployed charm always has the file resource declared; an empty file is
-    the realistic "not yet attached" placeholder (resource-get returns a
-    zero-byte file), which the charm treats as "binary not delivered".
-    """
-    placeholder = tmp_path / "norma-bin"
-    placeholder.write_bytes(b"")
-    return ops.testing.Resource(name="norma-bin", path=placeholder)
-
-
 def _make_ready(monkeypatch, *, running=True):
     """Make the SystemdDriver report ready + running with a no-op apply."""
     monkeypatch.setattr(workload_driver.SystemdDriver, "is_ready", lambda self: True)

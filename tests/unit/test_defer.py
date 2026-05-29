@@ -15,19 +15,9 @@ so a (placeholder, empty) norma-bin resource is declared on those States.
 
 import ops
 import ops.testing
-import pytest
 
 import norma
 from charm import NormaCharm
-
-
-@pytest.fixture
-def norma_bin(tmp_path):
-    """Empty placeholder norma-bin file resource (treated as not-yet-delivered)."""
-    placeholder = tmp_path / "norma-bin"
-    placeholder.write_bytes(b"")
-    return ops.testing.Resource(name="norma-bin", path=placeholder)
-
 
 # ----------------------------------------------------------------------------- #
 #  The test-defer action: arm / disarm + persistence                            #
