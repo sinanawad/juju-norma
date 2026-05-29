@@ -1,43 +1,41 @@
-"""Integration smoke test for juju-norma (jubilant, LXD controller).
-
-P0 scaffold: this establishes the jubilant + temp_model harness. The full
-deploy/active-idle acceptance (F1/F2) lands in P1. The test is skipped unless a
-packed charm artifact is present, so `make unit` and bare CI never block on a
-live LXD controller.
-
-Run with: make integration  (requires an LXD Juju controller, juju 4.0+).
-"""
-
-import pathlib
+"""F1/F2: lifecycle + systemd workload + file-resource delivery (jubilant, LXD)."""
 
 import jubilant
-import pytest
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-CHARM_GLOB = "juju-norma_*.charm"
-WORKLOAD_BIN = REPO_ROOT / "norma"
+from .conftest import APP
 
 
-def _charm_path() -> pathlib.Path | None:
-    matches = sorted(REPO_ROOT.glob(CHARM_GLOB))
-    return matches[0] if matches else None
+class TestLifecycle:
+    def test_deploy_active_idle(self, juju: jubilant.Juju):
+        """The shared fixture already deployed + waited; assert the steady state."""
+        status = juju.status()
+        unit = next(iter(status.apps[APP].units.values()))
+        assert unit.is_active
+        assert unit.workload_status.message == ""  # ActiveStatus carries no message
 
+    def test_systemd_service_active(self, juju: jubilant.Juju):
+        """F1: the workload runs under a charm-managed systemd unit."""
+        result = juju.cli("exec", "--unit", f"{APP}/0", "--", "systemctl", "is-active", "norma")
+        assert result.strip() == "active"
 
-pytestmark = pytest.mark.skipif(
-    _charm_path() is None or not WORKLOAD_BIN.exists(),
-    reason="needs a packed charm (charmcraft pack) and built workload (make build-workload)",
-)
+    def test_workload_binary_laid_down(self, juju: jubilant.Juju):
+        """F2: the file resource was installed at the host binary path, executable."""
+        out = juju.cli("exec", "--unit", f"{APP}/0", "--", "test", "-x", "/usr/local/bin/norma")
+        # `test -x` exits 0 (no output) when the binary exists and is executable;
+        # a non-zero exit would raise CLIError.
+        assert out is not None
 
-
-@pytest.mark.smoke
-def test_deploy_active_idle():
-    """Deploy the charm with its file resource and reach active/idle.
-
-    Marked ``smoke``: container-only, so it runs per-PR on a stock LXD runner
-    (`make integration-smoke`). The full F1-F22 suite (incl. cloud/VM-only cases)
-    stays unmarked and runs via workflow_dispatch on a richer runner.
-    """
-    charm = _charm_path()
-    with jubilant.temp_model() as juju:
-        juju.deploy(charm, resources={"norma-bin": str(WORKLOAD_BIN)})
-        juju.wait(jubilant.all_active, timeout=600)
+    def test_health_endpoint(self, juju: jubilant.Juju):
+        """F1: the workload serves its HTTP health endpoint on the host."""
+        out = juju.cli(
+            "exec",
+            "--unit",
+            f"{APP}/0",
+            "--",
+            "curl",
+            "-sS",
+            "-m",
+            "5",
+            "http://localhost:8080/health",
+        )
+        assert "OK" in out
