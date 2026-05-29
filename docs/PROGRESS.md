@@ -42,7 +42,9 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 | P5 | F5b | test-workload-ops action (systemd/file/subprocess) | DONE | live 7/7: file-write/read/exists/remove + service-status/restart + binary-check |
 | P6 | F12s | spaces / bindings | PARTIAL | `juju spaces` shows only `alpha` (multiple subnets) on LXD; multi-space `juju bind` needs MAAS/EC2 → ROADMAP. open-port/expose done in P4 |
 | P6 | F13 | machine constraints + placement | DONE (LXD subset) | constraints cores=2/mem=2G/root-disk=8G applied (juju constraints + show-machine); virt-type=virtual-machine → real LXD VM (machine 10 = VIRTUAL-MACHINE) active. cloud-only constraints (instance-type/tags/image-id/spaces) = ROADMAP; --to lxd:N nested = LXD limitation (see F15) |
-| P7 | — | CI (lint/unit/pack/integration-LXD), README, dashboards/alert-rules | TODO | |
+| —  | F21 | juju-resolve error path (folded into F20) | DONE | live: bad-behavior-mode=hook-error → workload error; set none + `juju resolve` → idle/active |
+| —  | F22 | stop/remove idempotent teardown | DONE | stop/remove handlers stop+disable+remove unit file (idempotent); unit-tested; clean live removals |
+| P7 | — | CI workflow + README + FINDINGS report + dashboards/alert-rules | DONE | .github/workflows/ci.yaml (lint/unit/pack/build/integration-LXD); README.md; docs/FINDINGS.md; alert rules + dashboard shipped (F16) |
 
 ## Findings / Juju + environment issues
 _(appended as discovered; feeds the final report)_
@@ -89,7 +91,26 @@ _(appended as discovered; feeds the final report)_
   monthly (Juju minimum is coarse); the rotate/expired/remove HANDLERS are unit-verified
   (Scenario) and hardened to never crash teardown. Live hook dispatch needs elapsed time.
 
-## Limitations (juju-bug or cloud-only; feature skipped on LXD)
-_(appended as discovered)_
+## Charm bugs found + fixed (calibration value — these are the kind of defect
+## this charm exists to surface)
 
-- None yet.
+- **relation-departed/broken crashed reconcile (`ModelError: permission denied`)** —
+  removing a *related* app (juju-norma-b) fired `calibration-provider-relation-departed`
+  on all juju-norma units; `_update_relation_data` read `rel.data[self.unit]` and Juju
+  denied relation-get on the departing relation → uncaught → all 3 units to `error`.
+  FIX: guard the calibration relation-data writes + secret grant/revoke with
+  `try/except ops.ModelError` (Constitution VII — reconcile must not crash on a normal
+  teardown event). Regression tests added (test_relations TestRelationTeardown). This is
+  a realistic machine-charm trap (relation-get is restricted during teardown).
+
+## Limitations (juju-bug, env, or cloud-only; feature partial/skipped on LXD)
+
+- **F11b block storage** — LXD provider rejects block charm storage. ROADMAP (MAAS/cloud).
+- **F15 lxd-profile application** — not applied on localhost LXD; nested lxd:N fails. ROADMAP.
+- **F12 multi-space bindings** — LXD = `alpha` only. ROADMAP (MAAS/EC2).
+- **F13 cloud-only constraints** — instance-type/tags/image-id/etc. ROADMAP.
+- **F13 `root-disk` constraint on localhost LXD** — `juju deploy --constraints root-disk=8G`
+  was accepted by Juju (shown in `juju constraints`) but the LXD machine failed to create:
+  `machine N down: Failed loading storage pool: Storage pool not found`. So root-disk
+  needs a configured LXD storage pool for root volumes; cores/mem/virt-type work fine.
+- **secret rotate/expire live dispatch** — time-gated (monthly); handlers unit-verified.

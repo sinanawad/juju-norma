@@ -788,21 +788,28 @@ class NormaCharm(ops.CharmBase):
             for rel in self.model.relations.get(endpoint, []):
                 if rel == broken_relation:
                     continue
-                self._write_if_changed(
-                    rel.data[self.unit],
-                    {"unit-name": self.unit.name, "role": endpoint.split("-")[-1]},
-                )
-                # F8 app-databag mode: only the leader writes the app-scope bag;
-                # it propagates to every unit on both ends of the relation.
-                if self.unit.is_leader():
+                # Relation databag access can be denied while a relation is
+                # departing/breaking (Juju raises ModelError "permission denied"
+                # on relation-get). Guard so teardown of a related app never
+                # crashes our reconcile (Constitution VII).
+                try:
                     self._write_if_changed(
-                        rel.data[self.app],
-                        {
-                            "app-name": self.app.name,
-                            "role": endpoint.split("-")[-1],
-                            "planned-units": str(self.app.planned_units()),
-                        },
+                        rel.data[self.unit],
+                        {"unit-name": self.unit.name, "role": endpoint.split("-")[-1]},
                     )
+                    # F8 app-databag mode: only the leader writes the app-scope
+                    # bag; it propagates to every unit on both ends.
+                    if self.unit.is_leader():
+                        self._write_if_changed(
+                            rel.data[self.app],
+                            {
+                                "app-name": self.app.name,
+                                "role": endpoint.split("-")[-1],
+                                "planned-units": str(self.app.planned_units()),
+                            },
+                        )
+                except ops.ModelError:
+                    logger.debug("Relation %s data not writable (departing); skipping", rel.id)
         self._manage_app_secret(broken_relation)
         self._inject_bad_relation_data(broken_relation)
 
@@ -828,10 +835,14 @@ class NormaCharm(ops.CharmBase):
         except ops.SecretNotFoundError:
             return
         for rel in self.model.relations.get("calibration-provider", []):
-            if rel is broken_relation:
-                secret.revoke(rel)
-            else:
-                secret.grant(rel)
+            # grant/revoke can fail while a relation is departing/breaking.
+            try:
+                if rel is broken_relation:
+                    secret.revoke(rel)
+                else:
+                    secret.grant(rel)
+            except ops.ModelError:
+                logger.debug("Secret grant/revoke on relation %s skipped (departing)", rel.id)
 
     @staticmethod
     def _write_if_changed(databag, values: dict[str, str]) -> None:

@@ -141,6 +141,53 @@ class TestGetRelationDataAction:
         assert result[0]["id"] == r1.id
 
 
+class TestRelationTeardown:
+    """Regression: relation-departed/broken on a calibration relation must not crash.
+
+    Live, Juju raises ModelError('permission denied') on relation-get while a
+    relation is departing; _update_relation_data must swallow it.
+    """
+
+    def test_departed_does_not_crash(self, monkeypatch):
+        _ready(monkeypatch)
+        ctx = ops.testing.Context(NormaCharm)
+        peer = ops.testing.PeerRelation(endpoint="norma-peers")
+        rel = ops.testing.Relation(
+            endpoint="calibration-provider",
+            remote_app_name="other",
+            remote_units_data={0: {"unit-name": "other/0"}},
+        )
+        # Should not raise even as the relation departs.
+        ctx.run(
+            ctx.on.relation_departed(rel, remote_unit=0),
+            ops.testing.State(relations={peer, rel}, leader=True),
+        )
+
+    def test_broken_does_not_crash(self, monkeypatch):
+        _ready(monkeypatch)
+        ctx = ops.testing.Context(NormaCharm)
+        peer = ops.testing.PeerRelation(endpoint="norma-peers")
+        rel = ops.testing.Relation(endpoint="calibration-provider")
+        ctx.run(
+            ctx.on.relation_broken(rel),
+            ops.testing.State(relations={peer, rel}, leader=True),
+        )
+
+    def test_data_write_guarded_against_modelerror(self, monkeypatch):
+        # Force the databag write to raise ModelError; reconcile must survive.
+        _ready(monkeypatch)
+
+        def _boom(databag, values):
+            raise ops.ModelError("permission denied")
+
+        monkeypatch.setattr(NormaCharm, "_write_if_changed", staticmethod(_boom))
+        ctx = ops.testing.Context(NormaCharm)
+        rel = ops.testing.Relation(endpoint="calibration-provider")
+        # No peer relation (so the peer branch — also using _write_if_changed —
+        # is skipped) isolates the guarded calibration loop.
+        ctx.run(ctx.on.relation_changed(rel), ops.testing.State(relations={rel}))
+
+
 class TestUpgradeCharm:
     """F17: upgrade-charm routes through reconcile and stamps workload version."""
 
