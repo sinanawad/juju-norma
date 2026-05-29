@@ -16,7 +16,6 @@ import json
 import ops
 import ops.testing
 
-import norma
 import workload_driver
 from charm import NormaCharm
 
@@ -174,9 +173,13 @@ class TestStorageSection:
         ctx = ops.testing.Context(NormaCharm)
         _, decoded = _run_introspect(ctx, ops.testing.State(), sections="storage")
         storage = decoded["storage"]
+        # Both declared storages are reported; mount-point appears only when
+        # attached (real Juju mount location, not a hardcoded path).
         assert "data" in storage
+        assert "blk" in storage
         assert isinstance(storage["data"]["attached"], bool)
-        assert storage["data"]["mount-point"] == norma.STORAGE_PATH
+        assert storage["data"]["attached"] is False
+        assert "mount-point" not in storage["data"]
 
     def test_data_not_attached_by_default(self):
         ctx = ops.testing.Context(NormaCharm)

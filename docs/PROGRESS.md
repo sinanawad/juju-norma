@@ -31,10 +31,11 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 | P3 | F7 | provides/requires self-relate (calibration iface) | DONE | 2 apps (same charm) integrated; provider sees provider+requirer unit data both ways |
 | P3 | F8 | app-databag mode | DONE | leader app bag {app-name,role,planned-units} propagates on both ends |
 | P3 | F17 | upgrade-charm + version | DONE | refresh→rev3; charm-version stamped; upgrade-charm count=3 in ledger |
-| P4 | F9 | scaling + cluster-info | TODO | |
-| P4 | F10 | secrets full lifecycle (rotate/expire) | TODO | |
-| P4 | F11 | block + filesystem storage + dynamic attach/detach | TODO | |
-| P4 | F12 | networking: open-port/expose | TODO | |
+| P4 | F9 | scaling + cluster-info | DONE | add-unit -n2 → 3 units active; get-cluster-info unit-count=3, leader, peer data all units |
+| P4 | F10 | secrets full lifecycle | DONE | leader app secret (monthly), get-secret-info has-content=true, `juju secrets` lists it; rotate/expire handlers unit-verified (live dispatch time-gated) |
+| P4 | F11 | filesystem storage + dynamic attach/detach | DONE | check-storage marker+writable; fresh app: add-storage data/5 → detach → attach cycle ✓ |
+| P4 | F11b | block storage | LIMITATION | LXD provider rejects block charm storage ("pool does not support charm storage block") — needs MAAS/cloud |
+| P4 | F12 | networking: open-port/expose | DONE | open-port 8080/tcp; `juju expose` → status exposed=True; bindings via test-networking |
 | P5 | F14 | subordinate mode (juju-info, container scope) | TODO | |
 | P5 | F15 | lxd-profile.yaml | TODO | |
 | P5 | F16 | cos-agent push observability | TODO | |
@@ -55,6 +56,22 @@ _(appended as discovered; feeds the final report)_
 - **[note] `re-emitted:true` ledger flag is Scenario-only** — live juju re-emission of
   a deferred event does not expose `event.deferred`, so the re-emitted marker only
   appears under ops.testing. Deferral itself (F18) is verified live. Cosmetic.
+- **[juju/env] LXD provider does not support block charm storage** — `juju add-storage
+  juju-norma/0 blk=lxd,1G` → "storage pool ... does not support charm storage block"
+  across lxd/lxd-zfs pools. Block storage (F11b) needs MAAS/EC2/OpenStack. Not a charm
+  bug; ROADMAP. Filesystem + dynamic attach/detach work fully on LXD.
+- **[juju] storage-count metadata is bound at deploy, not refresh** — widening `data`
+  to `multiple: range 1-5` and `juju refresh` succeeded (rev 6) but `add-storage data`
+  on the EXISTING units failed: "storage name data not supported by charm" / min-count
+  enforced. A FRESH deploy with the new metadata works (add/detach/attach data/5 cycle
+  passed). So storage multiplicity changes require redeploy, not refresh. Worth a doc note.
+- **[transient] systemctl restart failure on multi-unit refresh** — one unit logged
+  `systemctl restart norma failed: Job for norma.service failed` during a refresh, then
+  auto-recovered (idempotent apply `reset-failed`+retry); unit reached active. Watch for
+  reproducibility; currently self-healing, not blocking.
+- **[note] secret rotate/expire live dispatch is time-gated** — rotation policy is
+  monthly (Juju minimum is coarse); the rotate/expired/remove HANDLERS are unit-verified
+  (Scenario) and hardened to never crash teardown. Live hook dispatch needs elapsed time.
 
 ## Limitations (juju-bug or cloud-only; feature skipped on LXD)
 _(appended as discovered)_

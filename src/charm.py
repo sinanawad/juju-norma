@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import secrets
 
 import ops
 
@@ -95,6 +96,9 @@ class NormaCharm(ops.CharmBase):
         # --- Dedicated handlers (permitted by Constitution I) ---
         self.framework.observe(self.on.stop, self._on_stop)
         self.framework.observe(self.on.remove, self._on_remove)
+        self.framework.observe(self.on.secret_rotate, self._on_secret_rotate)
+        self.framework.observe(self.on.secret_expired, self._on_secret_expired)
+        self.framework.observe(self.on.secret_remove, self._on_secret_remove)
 
         # --- Status collection ---
         self.framework.observe(self.on.collect_unit_status, self._on_collect_unit_status)
@@ -109,6 +113,8 @@ class NormaCharm(ops.CharmBase):
         self.framework.observe(self.on.get_peer_data_action, self._on_get_peer_data_action)
         self.framework.observe(self.on.get_relation_data_action, self._on_get_relation_data_action)
         self.framework.observe(self.on.get_cluster_info_action, self._on_get_cluster_info_action)
+        self.framework.observe(self.on.get_secret_info_action, self._on_get_secret_info_action)
+        self.framework.observe(self.on.check_storage_action, self._on_check_storage_action)
         self.framework.observe(self.on.run_check_action, self._on_run_check_action)
         self.framework.observe(self.on.test_networking_action, self._on_test_networking_action)
         self.framework.observe(self.on.check_security_action, self._on_check_security_action)
@@ -165,8 +171,9 @@ class NormaCharm(ops.CharmBase):
         ):
             broken_relation = event.relation
 
-        # Relation data is independent of workload readiness — update first.
+        # Relation data + storage marker are independent of workload readiness.
         self._update_relation_data(broken_relation=broken_relation)
+        self._write_storage_marker()
 
         # Config validation (F3/F4).
         valid, error_msg = norma.validate_config(self._config_dict())
@@ -221,6 +228,31 @@ class NormaCharm(ops.CharmBase):
             self.driver.teardown()
         except WorkloadError:
             logger.exception("Workload teardown failed during remove")
+
+    def _on_secret_rotate(self, event: ops.SecretRotateEvent) -> None:
+        """F10: rotate by writing a fresh revision."""
+        self._log_event("secret-rotate", {"secret-label": event.secret.label or ""})
+        event.secret.set_content({"password": secrets.token_urlsafe(24)})
+
+    def _on_secret_expired(self, event: ops.SecretExpiredEvent) -> None:
+        """F10: drop the expired (superseded) revision; never crash the hook."""
+        self._log_event("secret-expired", {"secret-label": event.secret.label or ""})
+        self._drop_revision(event.secret, event.revision)
+
+    def _on_secret_remove(self, event: ops.SecretRemoveEvent) -> None:
+        """F10: drop an obsolete revision; never crash the hook."""
+        self._log_event("secret-remove", {"secret-label": event.secret.label or ""})
+        self._drop_revision(event.secret, event.revision)
+
+    @staticmethod
+    def _drop_revision(secret: ops.Secret, revision: int) -> None:
+        # ops refuses to remove the latest/only revision (ValueError); in the
+        # normal rotate→expire flow the revision is superseded so this succeeds.
+        # Guard so an edge-case expire on a sole revision can't wedge teardown.
+        try:
+            secret.remove_revision(revision)
+        except (ops.ModelError, ValueError):
+            logger.warning("Skipped removing secret revision %s (not removable)", revision)
 
     # ------------------------------------------------------------------ #
     #  Status collection (F4)                                             #
@@ -399,6 +431,60 @@ class NormaCharm(ops.CharmBase):
             }
         )
 
+    def _on_get_secret_info_action(self, event: ops.ActionEvent) -> None:
+        """F10: report the app-owned calibration secret (never the value)."""
+        event.log("Retrieving secret info")
+        peer = self.model.get_relation("norma-peers")
+        empty = {"secret-id": "", "has-content": "false", "rotation": ""}
+        if not peer:
+            event.set_results(empty)
+            return
+        secret_id = peer.data[self.app].get("secret-id", "")
+        if not secret_id:
+            event.set_results(empty)
+            return
+        try:
+            content = self.model.get_secret(id=secret_id).get_content(refresh=True)
+            has_content = bool(content.get("password"))
+        except (ops.SecretNotFoundError, ops.ModelError):
+            has_content = False
+        event.set_results(
+            {
+                "secret-id": secret_id,
+                "has-content": str(has_content).lower(),
+                "rotation": "monthly",
+            }
+        )
+
+    def _on_check_storage_action(self, event: ops.ActionEvent) -> None:
+        """F11: report storage status. data=filesystem (marker/writable), blk=block device."""
+        name = event.params.get("name", "data")
+        if name not in ("data", "blk"):
+            event.fail(f"Unknown storage name: {name}")
+            return
+        event.log(f"Checking storage '{name}'")
+        storages = self.model.storages.get(name, [])
+        results: dict[str, str] = {"name": name, "attached": str(bool(storages)).lower()}
+        if not storages:
+            results["mount-point"] = ""
+            event.set_results(results)
+            return
+        location = str(storages[0].location)
+        results["mount-point"] = location
+        if name == "data":
+            marker = os.path.join(location, norma.MARKER_FILE)
+            results["marker-exists"] = str(os.path.exists(marker)).lower()
+            if os.path.exists(marker):
+                try:
+                    with open(marker) as f:
+                        results["marker-content"] = f.read()
+                except OSError:
+                    results["marker-content"] = ""
+            results["writable"] = str(self._is_writable(location)).lower()
+        else:
+            results["is-block-device"] = str(_is_block_device(location)).lower()
+        event.set_results(results)
+
     def _on_run_check_action(self, event: ops.ActionEvent) -> None:
         event.log("Running capability check")
         check = event.params.get("check", "")
@@ -555,11 +641,12 @@ class NormaCharm(ops.CharmBase):
 
     def _collect_storage(self) -> dict:
         result: dict = {}
-        for name, cfg in norma.STORAGE_CONFIG.items():
-            result[name] = {
-                "attached": bool(self.model.storages.get(name)),
-                "mount-point": cfg["path"],
-            }
+        for name in ("data", "blk"):
+            storages = self.model.storages.get(name, [])
+            info: dict = {"attached": bool(storages)}
+            if storages:
+                info["mount-point"] = str(storages[0].location)
+            result[name] = info
         return result
 
     def _collect_systemd(self) -> dict:
@@ -639,13 +726,77 @@ class NormaCharm(ops.CharmBase):
                             "planned-units": str(self.app.planned_units()),
                         },
                     )
+        self._manage_app_secret(broken_relation)
         self._inject_bad_relation_data(broken_relation)
+
+    def _manage_app_secret(self, broken_relation: ops.Relation | None) -> None:
+        """F10: leader owns an app secret, stores its id in peer app data, and
+        grants it to calibration-provider relations (revoking the broken one)."""
+        if not self.unit.is_leader():
+            return
+        peer = self.model.get_relation("norma-peers")
+        if not peer:
+            return
+        secret_id = peer.data[self.app].get("secret-id")
+        if not secret_id:
+            new_secret = self.app.add_secret(
+                {"password": secrets.token_urlsafe(24)},
+                label="calibration-password",
+                rotate=ops.SecretRotate.MONTHLY,
+            )
+            peer.data[self.app]["secret-id"] = new_secret.id
+            secret_id = new_secret.id
+        try:
+            secret = self.model.get_secret(id=secret_id)
+        except ops.SecretNotFoundError:
+            return
+        for rel in self.model.relations.get("calibration-provider", []):
+            if rel is broken_relation:
+                secret.revoke(rel)
+            else:
+                secret.grant(rel)
 
     @staticmethod
     def _write_if_changed(databag, values: dict[str, str]) -> None:
         """Write only when a value differs (avoids relation-changed feedback loops)."""
         if any(databag.get(k) != v for k, v in values.items()):
             databag.update(values)
+
+    def _write_storage_marker(self) -> None:
+        """F11: drop a one-time calibration marker into the filesystem storage mount."""
+        storages = self.model.storages.get("data", [])
+        if not storages:
+            return
+        location = str(storages[0].location)
+        if not os.path.isdir(location):
+            return
+        marker = os.path.join(location, norma.MARKER_FILE)
+        if os.path.exists(marker):
+            return
+        try:
+            with open(marker, "w") as f:
+                json.dump(
+                    {
+                        "created_by": self.unit.name,
+                        "created_at": _utc_now_iso(),
+                        "storage": "data",
+                        "revision": 1,
+                    },
+                    f,
+                )
+        except OSError:
+            logger.warning("Could not write storage marker at %s", marker)
+
+    @staticmethod
+    def _is_writable(location: str) -> bool:
+        test_path = os.path.join(location, ".write-test")
+        try:
+            with open(test_path, "w") as f:
+                f.write("test")
+            os.remove(test_path)
+            return True
+        except OSError:
+            return False
 
     def _config_dict(self) -> dict:
         return {
@@ -679,6 +830,16 @@ def _utc_now_iso() -> str:
     import datetime
 
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _is_block_device(path: str) -> bool:
+    """True if path is a block special file (F11 block-storage detection)."""
+    import stat
+
+    try:
+        return stat.S_ISBLK(os.stat(path).st_mode)
+    except OSError:
+        return False
 
 
 if __name__ == "__main__":  # pragma: nocover

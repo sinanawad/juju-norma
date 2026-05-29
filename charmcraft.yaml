@@ -46,7 +46,21 @@ storage:
   data:
     type: filesystem
     minimum-size: 1G
-    description: Calibration data directory, mounted by Juju on the host.
+    multiple:
+      range: 1-5
+    description: |
+      Calibration data directory, mounted by Juju on the host. Multiple range
+      1-5 so dynamic add-storage / detach-storage / attach-storage (IAASOnly,
+      machine-distinct — blocked on k8s) can be exercised on instances >1.
+  blk:
+    type: block
+    minimum-size: 1G
+    multiple:
+      range: 0-1
+    description: |
+      Optional raw block device (machine-only; k8s charms cannot take block).
+      Provisionability depends on the LXD storage pool — exercised dynamically
+      via `juju add-storage`. Reported (not auto-formatted) by check-storage.
 
 config:
   options:
@@ -127,6 +141,15 @@ actions:
     required: [endpoint]
   get-cluster-info:
     description: Return cluster membership information.
+  get-secret-info:
+    description: Return info about the app-owned calibration secret.
+  check-storage:
+    description: Check storage status and data integrity.
+    params:
+      name:
+        type: string
+        description: "Storage name to check: data (filesystem) or blk (block)."
+        default: data
   run-check:
     description: Validate a specific charm capability and return pass/fail.
     params:

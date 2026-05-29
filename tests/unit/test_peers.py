@@ -83,20 +83,33 @@ class TestPeerDataWrite:
 class TestPeerDataIdempotency:
     def test_no_churn_when_data_already_matches(self, monkeypatch):
         _make_ready(monkeypatch)
+        # Pre-seed the app secret (F10) so the leader does not mint a new one;
+        # isolates this to peer-data churn.
+        existing = ops.testing.Secret(
+            {"password": "pw"}, owner="app", label="calibration-password"
+        )
         peer = ops.testing.PeerRelation(
             endpoint="norma-peers",
             local_unit_data={"unit-name": "juju-norma/0", "leader": "True"},
-            local_app_data={"cluster-size": "1", "leader-unit": "juju-norma/0"},
+            local_app_data={
+                "cluster-size": "1",
+                "leader-unit": "juju-norma/0",
+                "secret-id": existing.id,
+            },
         )
         ctx = ops.testing.Context(NormaCharm)
         out = ctx.run(
             ctx.on.config_changed(),
-            ops.testing.State(leader=True, relations={peer}),
+            ops.testing.State(leader=True, relations={peer}, secrets={existing}),
         )
         rel = _peer_from(out)
         # Data is unchanged (no spurious writes / feedback-loop churn).
         assert rel.local_unit_data == {"unit-name": "juju-norma/0", "leader": "True"}
-        assert rel.local_app_data == {"cluster-size": "1", "leader-unit": "juju-norma/0"}
+        assert rel.local_app_data == {
+            "cluster-size": "1",
+            "leader-unit": "juju-norma/0",
+            "secret-id": existing.id,
+        }
 
 
 class TestGetPeerDataAction:
