@@ -1,0 +1,183 @@
+"""Workload driver seam for the juju-norma machine charm.
+
+This module is the reuse boundary between the charm and the substrate. It is
+ops-free: it speaks only in primitives (port, version, env, paths) so the charm
+can drive the workload without knowing whether it sits on systemd (machine) or
+Pebble (k8s).
+
+NET-NEW (SYNTHESIS §6 M2): the ``WorkloadDriver`` protocol does NOT exist in the
+k8s sibling — the sibling calls Pebble directly. This charm defines the seam and
+implements ``SystemdDriver``; a future ``PebbleDriver`` in the sibling is
+hypothetical. ~80-85% of the sibling's *logic* is reusable behind this seam, but
+the seam itself is new abstraction work.
+"""
+
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+import norma
+
+
+class WorkloadError(Exception):
+    """Raised when a host workload operation fails.
+
+    The charm catches this in the reconciler and surfaces it via unit status
+    rather than letting the hook crash (Constitution VII: no ErrorStatus for
+    recoverable issues).
+    """
+
+
+@runtime_checkable
+class WorkloadDriver(Protocol):
+    """Substrate-neutral workload control surface.
+
+    The machine charm implements this with systemd + filesystem + subprocess;
+    the k8s sibling would implement it with Pebble. The charm depends only on
+    this protocol, never on the concrete driver.
+    """
+
+    def is_ready(self) -> bool:
+        """Whether the workload can be managed (binary delivered)."""
+        ...
+
+    def install_binary(self, source: str) -> None:
+        """Lay the workload binary down on the host (idempotent)."""
+        ...
+
+    def apply(self, *, port: int, version: str, env: dict[str, str]) -> None:
+        """Render + install the service definition and (re)start the workload."""
+        ...
+
+    def service_running(self) -> bool:
+        """Whether the workload service is currently active."""
+        ...
+
+    def restart(self) -> None:
+        """Restart the workload service."""
+        ...
+
+    def stop(self) -> None:
+        """Stop and disable the workload service (idempotent)."""
+        ...
+
+    def teardown(self) -> None:
+        """Stop the service and remove the unit file (idempotent)."""
+        ...
+
+    def workload_version(self) -> str:
+        """Best-effort workload version, or "" if unavailable."""
+        ...
+
+
+class SystemdDriver:
+    """Drive the Norma workload via a charm-managed systemd unit.
+
+    All host operations are wrapped defensively and re-raised as
+    :class:`WorkloadError` (Constitution Tech Stack: "Wrap host operations
+    defensively; surface failures via status").
+    """
+
+    def __init__(
+        self,
+        service_name: str = norma.SERVICE_NAME,
+        binary_path: str = norma.BINARY_PATH,
+        unit_path: str = norma.SYSTEMD_UNIT_PATH,
+    ) -> None:
+        self.service_name = service_name
+        self.binary_path = binary_path
+        self.unit_path = unit_path
+
+    # -- readiness -----------------------------------------------------------
+
+    def is_ready(self) -> bool:
+        """The workload is manageable once its binary has been laid down.
+
+        On a fresh unit (and in unit tests) the binary is absent, so this
+        returns False and the reconciler skips workload application — keeping
+        unit tests free of host side effects.
+        """
+        return Path(self.binary_path).exists()
+
+    def install_binary(self, source: str) -> None:
+        """Copy the fetched file resource to the host binary path, executable.
+
+        This is F2 (workload via file resource): the charm fetches the
+        ``norma-bin`` resource with ``resource-get`` and hands us the path;
+        we lay it down at ``self.binary_path``. Idempotent — safe to re-run on
+        every reconcile and on ``juju refresh``/``attach-resource``.
+        """
+        try:
+            dest = Path(self.binary_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, dest)
+            dest.chmod(0o755)
+        except OSError as e:
+            raise WorkloadError(f"failed to install binary to {self.binary_path}: {e}") from e
+
+    # -- lifecycle -----------------------------------------------------------
+
+    def apply(self, *, port: int, version: str, env: dict[str, str]) -> None:
+        """Idempotently converge the unit file + running service.
+
+        Like Pebble's replan, this is a no-op when nothing changed: it only
+        rewrites + reloads + restarts when the unit text differs, and otherwise
+        merely starts the service if it is not already active. This avoids
+        restart storms during the install hook burst (install/start/
+        config-changed/leader-elected all reconcile within seconds), which
+        otherwise trips systemd's start-limit and wedges the unit as failed.
+        """
+        desired = norma.build_systemd_unit(port, version, env)
+        unit = Path(self.unit_path)
+        try:
+            changed = not unit.exists() or unit.read_text() != desired
+            if changed:
+                unit.write_text(desired)
+        except OSError as e:
+            raise WorkloadError(f"failed to write unit file {self.unit_path}: {e}") from e
+
+        if changed:
+            self._systemctl("daemon-reload")
+        self._systemctl("enable", self.service_name)
+
+        if changed or not self.service_running():
+            # Clear any prior start-limit-hit so a wedged unit can recover.
+            self._systemctl("reset-failed", self.service_name, check=False)
+            self._systemctl("restart", self.service_name)
+
+    def service_running(self) -> bool:
+        return self._systemctl("is-active", "--quiet", self.service_name, check=False) == 0
+
+    def restart(self) -> None:
+        self._systemctl("restart", self.service_name)
+
+    def stop(self) -> None:
+        self._systemctl("stop", self.service_name, check=False)
+        self._systemctl("disable", self.service_name, check=False)
+
+    def teardown(self) -> None:
+        self.stop()
+        Path(self.unit_path).unlink(missing_ok=True)
+        self._systemctl("daemon-reload", check=False)
+
+    def workload_version(self) -> str:
+        # The binary carries its version in the VERSION env / build ldflags; a
+        # richer probe (HTTP /version) is added with the health features later.
+        return ""
+
+    # -- internals -----------------------------------------------------------
+
+    def _systemctl(self, *args: str, check: bool = True) -> int:
+        try:
+            result = subprocess.run(
+                ["systemctl", *args],
+                capture_output=True,
+                text=True,
+                check=check,
+            )
+        except FileNotFoundError as e:
+            raise WorkloadError("systemctl not found on host") from e
+        except subprocess.CalledProcessError as e:
+            raise WorkloadError(f"systemctl {' '.join(args)} failed: {e.stderr.strip()}") from e
+        return result.returncode

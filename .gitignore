@@ -22,6 +22,8 @@ htmlcov/
 
 # Go
 workload/norma
+# Built workload binary (file resource), produced by `make build-workload`
+/norma
 
 # IDE
 .vscode/
