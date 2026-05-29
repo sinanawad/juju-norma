@@ -45,6 +45,7 @@ each feature passes its gates: `make lint && make unit` (unit) + live-LXD
 | —  | F21 | juju-resolve error path (folded into F20) | DONE | live: bad-behavior-mode=hook-error → workload error; set none + `juju resolve` → idle/active |
 | —  | F22 | stop/remove idempotent teardown | DONE | stop/remove handlers stop+disable+remove unit file (idempotent); unit-tested; clean live removals |
 | P7 | — | CI workflow + README + FINDINGS report + dashboards/alert-rules | DONE | .github/workflows/ci.yaml (lint/unit/pack/build/integration-LXD); README.md; docs/FINDINGS.md; alert rules + dashboard shipped (F16) |
+| P8 | — | jubilant integration suite (live LXD, repeatable) | DONE | 37 tests, harness ported from sibling (file-resource/LXD/4.0). Live-green: lifecycle/config/actions 18/18, scaling 3/3, networking 2/2, badbehavior 4/4, relations(CMR)+defer+upgrade pass, storage(fs+dynamic), subordinate; block-storage + cos-agent xfail (env). Debugged 8 harness bugs (destroy-model --force teardown, _no_cascade guard, jubilant.never→default, exposed/open_ports attrs, storage attach-wait, abs charm path, explicit-set recovery) |
 
 ## Findings / Juju + environment issues
 _(appended as discovered; feeds the final report)_

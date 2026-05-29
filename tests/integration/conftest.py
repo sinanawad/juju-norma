@@ -76,17 +76,20 @@ def pytest_addoption(parser):
 
 
 def _find_charm(env_var: str, glob: str, search_root: pathlib.Path) -> pathlib.Path:
+    # Always absolute: juju deploy treats a bare relative path as a charm name.
     override = _env(env_var)
     if override:
         p = pathlib.Path(override)
+        if not p.is_absolute():
+            p = (REPO_ROOT / p).resolve()
         if p.is_dir():
             matches = sorted(p.glob(glob))
             assert matches, f"No {glob} found in {p}"
-            return matches[-1]
+            return matches[-1].resolve()
         return p
     matches = sorted(search_root.glob(glob))
     assert matches, f"No {glob} found under {search_root}; run charmcraft pack"
-    return matches[-1]
+    return matches[-1].resolve()
 
 
 @pytest.fixture(scope="session")
@@ -97,13 +100,20 @@ def charm_path() -> pathlib.Path:
 
 @pytest.fixture(scope="session")
 def subordinate_charm_path() -> pathlib.Path | None:
-    """Locate the built subordinate .charm, or None if not packed."""
+    """Locate the built subordinate .charm, or None if not packed.
+
+    Always returns an ABSOLUTE path — juju deploy treats a relative path without
+    a leading ./ as a charm *name* ("ambiguous charm" error), so a relative
+    SUBORDINATE_CHARM_PATH must be resolved.
+    """
     override = _env("SUBORDINATE_CHARM_PATH")
     search = pathlib.Path(override) if override else (REPO_ROOT / "subordinate")
+    if not search.is_absolute():
+        search = (REPO_ROOT / search).resolve()
     if search.is_file():
         return search
     matches = sorted(search.glob(SUBORDINATE_GLOB)) if search.is_dir() else []
-    return matches[-1] if matches else None
+    return matches[-1].resolve() if matches else None
 
 
 @pytest.fixture(scope="session")
@@ -217,6 +227,6 @@ def _no_cascade(juju, request):
         return
     try:
         juju.wait(jubilant.all_active, timeout=120)
-    except jubilant.TimeoutError:
+    except TimeoutError:
         juju.config(APP, reset=["calibration-int", "calibration-string", "bad-behavior-mode"])
         juju.wait(jubilant.all_active, timeout=180)

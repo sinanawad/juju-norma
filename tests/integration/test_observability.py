@@ -38,7 +38,7 @@ class TestCosAgent:
             def _related(s) -> bool:
                 return GAGENT in s.apps and bool(s.apps[GAGENT].units)
 
-            juju.wait(_related, timeout=900, error=jubilant.never)
+            juju.wait(_related, timeout=900)
 
             import json
 
@@ -49,4 +49,4 @@ class TestCosAgent:
             assert "scrape" in blob.lower() or "metrics" in blob.lower()
         finally:
             juju.cli("remove-application", GAGENT, "--no-prompt", "--force", include_model=True)
-            juju.wait(lambda s: GAGENT not in s.apps, timeout=300, error=jubilant.never)
+            juju.wait(lambda s: GAGENT not in s.apps, timeout=300)

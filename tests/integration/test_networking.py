@@ -14,18 +14,18 @@ class TestExpose:
         juju.cli("expose", APP)
 
         def _exposed(s) -> bool:
-            return s.apps[APP].is_exposed
+            return s.apps[APP].exposed
 
         juju.wait(_exposed, timeout=120)
-        assert juju.status().apps[APP].is_exposed
+        assert juju.status().apps[APP].exposed
         juju.cli("unexpose", APP)
 
     def test_port_opened(self, juju: jubilant.Juju):
         status = juju.status()
         unit = next(iter(status.apps[APP].units.values()))
         # The reconciler opens the configured workload port (8080 default).
-        assert any("8080" in str(p) for p in (unit.opened_ports or [])) or True
-        # Authoritative check via the action (opened_ports surfacing varies by status format).
+        assert any("8080" in str(p) for p in (unit.open_ports or []))
+        # Cross-check via the action.
         import json
 
         task = juju.run(f"{APP}/leader", "test-networking")
