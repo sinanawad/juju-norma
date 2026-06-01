@@ -6,6 +6,8 @@ VERSION ?= dev
 lint:
 	uv run ruff check src/ tests/
 	uv run ruff format --check src/ tests/
+	@test -z "$$(gofmt -l workload/)" || { echo "gofmt: unformatted Go files:"; gofmt -l workload/; exit 1; }
+	cd workload && go vet ./...
 
 fmt:
 	uv run ruff format src/ tests/

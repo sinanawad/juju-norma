@@ -4,15 +4,36 @@ on:
   push:
     branches: [main]
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.jujuignore'
   workflow_dispatch:
+
+# Cancel a superseded run (e.g. on force-push) instead of burning a 2nd pipeline.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege GITHUB_TOKEN: no job needs more. Grant per-job if ever required.
+permissions: {}
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      # Go toolchain so `make lint` can gate the Go workload too (gofmt + vet).
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: workload/go.mod
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync --extra dev
@@ -22,16 +43,19 @@ jobs:
     name: Unit Tests
     runs-on: ubuntu-24.04
     needs: lint
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync --extra dev
       - run: make unit
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-report
           path: .coverage
@@ -40,17 +64,20 @@ jobs:
   workload-build:
     name: Build workload
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
         with:
-          go-version: "1.22"
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: workload/go.mod
       - run: |
           cd workload && go vet ./...
       - name: Build static workload binary
         run: make build-workload VERSION=ci
       - name: Upload workload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: workload
           path: norma
@@ -60,8 +87,11 @@ jobs:
     name: Pack Charm (+ subordinate)
     runs-on: ubuntu-24.04
     needs: lint
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - name: Setup LXD
         uses: canonical/setup-lxd@v1
       - name: Install charmcraft
@@ -73,7 +103,7 @@ jobs:
       - name: Pack subordinate charm
         run: cd subordinate && charmcraft pack
       - name: Upload charm artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: charms
           path: |
@@ -91,14 +121,16 @@ jobs:
     # nesting) stays in the workflow_dispatch `integration` job below.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: workload
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: charms
       - run: |
@@ -133,11 +165,13 @@ jobs:
         # so adding 4.1 / 26.04 later is a one-line change.
         juju-channel: ["4.0/stable"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: workload
       - run: uv sync --extra dev
