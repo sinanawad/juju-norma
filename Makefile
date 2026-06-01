@@ -1,4 +1,4 @@
-.PHONY: lint fmt unit integration integration-setup build-workload clean
+.PHONY: lint fmt unit integration integration-smoke integration-setup build-workload clean
 
 # Version stamped into the workload binary; override with `make build-workload VERSION=x.y.z`.
 VERSION ?= dev
@@ -17,6 +17,10 @@ unit:
 
 integration:
 	uv run pytest tests/integration -v --tb=short
+
+# Container-only subset, safe on a stock LXD GitHub runner (no KVM/nesting).
+integration-smoke:
+	uv run pytest tests/integration -v --tb=short -m smoke
 
 integration-setup:
 	SETUP_ENVIRONMENT=1 uv run pytest tests/integration -v --tb=short

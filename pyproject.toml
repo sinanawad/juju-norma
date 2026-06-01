@@ -43,3 +43,7 @@ show_missing = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "lib"]
+markers = [
+    "smoke: container-only integration tests runnable per-PR on a stock LXD runner",
+    "mutates: integration test may intentionally leave the unit non-active (skips the no-cascade guard)",
+]
