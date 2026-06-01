@@ -127,10 +127,10 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: workload
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: charms
       - run: |
@@ -171,7 +171,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: workload
       - run: uv sync --extra dev
