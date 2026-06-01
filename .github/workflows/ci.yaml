@@ -63,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup LXD
-        uses: canonical/setup-lxd@main
+        uses: canonical/setup-lxd@v1
       - name: Install charmcraft
         run: sudo snap install charmcraft --classic
       - name: Fetch charm libs
@@ -104,11 +104,14 @@ jobs:
       - run: |
           uv sync --extra dev
           chmod +x norma
-      - name: Set up LXD + Juju (4.0)
-        uses: charmed-kubernetes/actions-operator@main
-        with:
-          provider: lxd
-          juju-channel: 4.0/stable
+      # Lean LXD + Juju (machine charm — no kubectl/microk8s/bundle that the
+      # k8s-oriented charmed-kubernetes/actions-operator drags in).
+      - name: Set up LXD
+        uses: canonical/setup-lxd@v1
+      - name: Install Juju + bootstrap controller
+        run: |
+          sudo snap install juju --channel=4.0/stable
+          juju bootstrap localhost lxd
       - name: Smoke integration (jubilant, LXD containers)
         run: make integration-smoke
 
@@ -138,11 +141,13 @@ jobs:
         with:
           name: workload
       - run: uv sync --extra dev
-      - name: Set up LXD + Juju
-        uses: charmed-kubernetes/actions-operator@main
-        with:
-          provider: lxd
-          juju-channel: ${{ matrix.juju-channel }}
+      # Lean LXD + Juju (machine charm — no k8s tooling).
+      - name: Set up LXD
+        uses: canonical/setup-lxd@v1
+      - name: Install Juju + bootstrap controller
+        run: |
+          sudo snap install juju --channel=${{ matrix.juju-channel }}
+          juju bootstrap localhost lxd
       - name: Integration (jubilant, LXD)
         run: make integration
         timeout-minutes: 80
