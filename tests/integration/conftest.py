@@ -173,8 +173,13 @@ def juju(environment_ready, charm_path, workload_bin):
     """
     model = _env("JUJU_MODEL")
     cli = _env("JUJU_CLI")
-    controller = _env("JUJU_CONTROLLER", CONTROLLER_DEFAULT)
-    cloud = _env("JUJU_CLOUD", CLOUD_DEFAULT)
+    # Controller/cloud are OPTIONAL: when unset we operate on the CURRENT
+    # controller (what `actions-operator` bootstraps + switches to in CI, or the
+    # active local controller). Only switch/target a named controller/cloud when
+    # explicitly requested. Hardcoding "lxd"/"localhost" broke CI, where the
+    # bootstrapped controller has a generated name → "controller lxd not found".
+    controller = _env("JUJU_CONTROLLER")
+    cloud = _env("JUJU_CLOUD")
     keep = _env("KEEP_MODEL") == "1"
     resources = {RESOURCE_NAME: str(workload_bin)}
 
@@ -184,15 +189,20 @@ def juju(environment_ready, charm_path, workload_bin):
         yield j
         return
 
-    # Manual model lifecycle. Used whenever a non-default juju binary is given,
-    # OR for the default path too — jubilant.temp_model()'s teardown does a plain
-    # destroy-model, which HANGS forever if a unit is wedged in error (the F20/F21
-    # bad-behavior tests deliberately drive errors). We always tear down with
-    # --force --no-wait so an errored unit can never wedge cleanup.
+    # Manual model lifecycle (not jubilant.temp_model): temp_model's teardown
+    # does a plain destroy-model, which HANGS forever if a unit is wedged in
+    # error (the F20/F21 bad-behavior tests deliberately drive errors). We tear
+    # down with --force --no-wait so an errored unit can never wedge cleanup.
     binary = cli or "juju"
-    model_name = f"norma-{uuid.uuid4().hex[:8]}"
     no_model = jubilant.Juju(cli_binary=binary)
-    no_model.cli("add-model", model_name, cloud, "-c", controller, include_model=False)
+    if controller:
+        # Make the requested controller current so bare model names resolve.
+        no_model.cli("switch", controller, include_model=False)
+    model_name = f"norma-{uuid.uuid4().hex[:8]}"
+    add_args = ["add-model", model_name]
+    if cloud:
+        add_args.append(cloud)
+    no_model.cli(*add_args, include_model=False)
     j = jubilant.Juju(model=model_name, cli_binary=binary)
     try:
         j.deploy(str(charm_path), app=APP, resources=resources)
