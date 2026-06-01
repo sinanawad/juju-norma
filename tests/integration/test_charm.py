@@ -1,10 +1,12 @@
 """F1/F2: lifecycle + systemd workload + file-resource delivery (jubilant, LXD)."""
 
 import jubilant
+import pytest
 
 from .conftest import APP
 
 
+@pytest.mark.smoke
 class TestLifecycle:
     def test_deploy_active_idle(self, juju: jubilant.Juju):
         """The shared fixture already deployed + waited; assert the steady state."""
