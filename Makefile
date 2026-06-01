@@ -1,4 +1,4 @@
-.PHONY: lint fmt unit integration integration-setup build-workload clean
+.PHONY: lint fmt unit integration integration-smoke integration-setup build-workload clean
 
 # Version stamped into the workload binary; override with `make build-workload VERSION=x.y.z`.
 VERSION ?= dev
@@ -6,6 +6,8 @@ VERSION ?= dev
 lint:
 	uv run ruff check src/ tests/
 	uv run ruff format --check src/ tests/
+	@test -z "$$(gofmt -l workload/)" || { echo "gofmt: unformatted Go files:"; gofmt -l workload/; exit 1; }
+	cd workload && go vet ./...
 
 fmt:
 	uv run ruff format src/ tests/
@@ -17,6 +19,10 @@ unit:
 
 integration:
 	uv run pytest tests/integration -v --tb=short
+
+# Container-only subset, safe on a stock LXD GitHub runner (no KVM/nesting).
+integration-smoke:
+	uv run pytest tests/integration -v --tb=short -m smoke
 
 integration-setup:
 	SETUP_ENVIRONMENT=1 uv run pytest tests/integration -v --tb=short

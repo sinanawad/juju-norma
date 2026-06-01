@@ -5,6 +5,19 @@ live-verifying the machine calibration charm on an **LXD** controller
 (`juju 4.0.10`, localhost cloud). Ordered by likely interest. Charm-side bugs we
 introduced are excluded (fixed in-branch); this is about the substrate/engine.
 
+## Integration-suite execution note (localhost LXD)
+
+The jubilant suites must run **one heavy suite per `pytest` process** (each gets a
+fresh session model), NOT all-in-one. Batching many machine-provisioning suites
+into a single process saturates the single localhost-LXD host: new machines take
+>15 min to boot and tests time out with `waiting for machine` (machine `stopped`)
+— which looks like a charm/test failure but is host contention. Read-only suites
+(config, actions, lifecycle) batch fine; scaling/storage/subordinate/relations
+(which add machines or apps) should be invoked separately. CI on a dedicated
+runner can batch more, but the per-suite invocation is the safe default. Teardown
+must use `destroy-model --force --no-wait` (a plain destroy hangs forever on an
+errored unit; F20/F21 deliberately error).
+
 ## 0. Intentional test-bed affordances — MUST NOT be copied into a production charm
 
 This is a *sterile calibration* charm: several deliberate choices are safe here

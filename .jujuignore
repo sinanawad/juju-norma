@@ -1,0 +1,9 @@
+# Files charmcraft must NOT pack into the .charm (separate from .gitignore, which
+# controls git). Keeps build output, the local workload binary, and any token out
+# of the published artifact.
+/venv
+*.py[cod]
+__pycache__/
+*.charm
+/norma
+*-token.txt
