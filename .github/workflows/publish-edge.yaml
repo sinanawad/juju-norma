@@ -61,20 +61,33 @@ jobs:
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           charm=$(ls juju-norma_amd64.charm)
+          # CharmHub intermittently drops the connection mid-upload
+          # ('Connection aborted', RemoteDisconnected) — retry transient failures
+          # so an unattended main-push publish doesn't silently skip a revision.
+          cc() {
+            local out rc
+            for attempt in 1 2 3 4 5; do
+              out=$(charmcraft "$@" 2>/tmp/cc.err); rc=$?
+              if [ "$rc" -eq 0 ]; then printf '%s' "$out"; return 0; fi
+              echo "charmcraft $1 attempt $attempt failed (rc=$rc): $(tail -1 /tmp/cc.err)" >&2
+              sleep 20
+            done
+            echo "charmcraft $1 failed after 5 attempts" >&2
+            return 1
+          }
           # Upload the CHARM first: CharmHub only learns the charm's declared
           # resources (norma-bin) from an uploaded revision's metadata. On a
           # brand-new charm, uploading the resource first is rejected with
           # "Resource does not exist for resource revision at index 0".
-          charm_rev=$(charmcraft upload "$charm" --format json | jq -r '.revision')
+          charm_json=$(cc upload "$charm" --format json) || exit 1
+          charm_rev=$(echo "$charm_json" | jq -r '.revision')
           echo "charm revision: $charm_rev"
           # Now the FILE resource is known — upload the binary, capture its revision.
-          res_rev=$(charmcraft upload-resource juju-norma norma-bin \
-            --filepath ./norma --format json | jq -r '.revision')
+          res_json=$(cc upload-resource juju-norma norma-bin --filepath ./norma --format json) || exit 1
+          res_rev=$(echo "$res_json" | jq -r '.revision')
           echo "norma-bin resource revision: $res_rev"
           # Release the charm revision to edge with the resource bound to it.
-          charmcraft release juju-norma \
-            --revision "$charm_rev" \
-            --channel latest/edge \
-            --resource norma-bin:"$res_rev"
+          cc release juju-norma --revision "$charm_rev" --channel latest/edge --resource norma-bin:"$res_rev" || exit 1
+          echo "released charm rev $charm_rev (norma-bin rev $res_rev) to latest/edge"
