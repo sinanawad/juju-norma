@@ -1,19 +1,35 @@
-# Dependabot keeps the two supply-chain surfaces that nothing else watches
-# current: GitHub Actions (the root cause of the Node-20 deprecation fire-drill)
-# and the Go workload module.
-#
-# Note: Python deps are managed with `uv`, which GitHub Dependabot does not list
-# as a supported `package-ecosystem` (its `pip` ecosystem would not track
-# uv.lock). Python (ops / jubilant / ruff — all dev/test deps) is therefore
-# bumped manually via `uv lock --upgrade`; revisit if Dependabot adds `uv`.
+# Keeps the three supply-chain surfaces nothing else watches: GitHub Actions
+# (the root cause of the Node-20 deprecation fire-drill), the Python deps, and
+# the Go workload module.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+
+  # `uv` ecosystem (GA 2025-03) updates pyproject.toml AND uv.lock together; the
+  # old `pip` ecosystem left uv.lock stale. CI now runs `uv lock --check` +
+  # `uv sync --frozen`, so a stale lock is a real drift/break risk — let
+  # Dependabot keep it fresh instead of relying on a manual `uv lock --upgrade`.
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      python-minor:
+        update-types: [minor, patch]
 
   - package-ecosystem: gomod
     directory: "/workload"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(workload)"
