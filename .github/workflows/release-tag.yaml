@@ -1,0 +1,125 @@
+name: Release (tag)
+
+# On a git tag `v*`:
+#   1. Promote the revision currently on latest/edge -> latest/candidate. The
+#      promotion preserves the charm revision number and its attached norma-bin
+#      resource, so the exact bits validated on edge flow to candidate.
+#   2. Build the SUBORDINATE charm (the machine analogue of the k8s sibling's
+#      sudoer variant — a real second artifact, not an overlay) and the norma
+#      binary, for the GitHub Release.
+#   3. Download the principal charm from latest/candidate (byte-identical to what
+#      CharmHub serves), and cut a GitHub Release with the principal + subordinate
+#      .charm, the norma binary, and SHA256SUMS — all SLSA-attested.
+#
+# Machine specifics vs the sibling: no ROCK promotion; the GH Release carries the
+# norma binary so offline consumers can `juju deploy ... --resource norma-bin=`.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  promote-to-candidate:
+    name: Promote latest/edge -> latest/candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install charmcraft
+        run: sudo snap install charmcraft --classic
+      - name: charmcraft promote edge -> candidate
+        env:
+          CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
+        run: |
+          charmcraft promote \
+            --name=juju-norma \
+            --from-channel=latest/edge \
+            --to-channel=latest/candidate \
+            --yes
+
+  build-artifacts:
+    name: Build subordinate charm + norma binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: workload/go.mod
+      - name: Setup LXD
+        uses: canonical/setup-lxd@8c6a87bfb56aa48f3fb9b830baa18562d8bfd4ee # v1
+      - name: Install charmcraft
+        run: sudo snap install charmcraft --classic
+      - name: Build norma binary (stamped with the tag)
+        run: make build-workload VERSION=${GITHUB_REF_NAME}
+      - name: Pack subordinate charm
+        run: cd subordinate && charmcraft pack -v
+      - name: Stage artifacts
+        run: |
+          set -euo pipefail
+          sub=$(ls subordinate/juju-norma-subordinate_*.charm | grep '_amd64' | head -1)
+          mv "$sub" juju-norma-subordinate_amd64.charm
+          mv norma norma-linux-amd64
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-artifacts
+          path: |
+            juju-norma-subordinate_amd64.charm
+            norma-linux-amd64
+          if-no-files-found: error
+
+  github-release:
+    name: Create GitHub Release
+    needs: [promote-to-candidate, build-artifacts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # OIDC for SLSA build provenance
+      attestations: write # record the provenance attestation
+    steps:
+      - name: Install charmcraft
+        run: sudo snap install charmcraft --classic
+      - name: Download principal .charm from latest/candidate
+        env:
+          CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The canonical artifact CharmHub serves on this channel — byte-identical
+          # to what `juju deploy --channel=latest/candidate` pulls.
+          charmcraft download juju-norma --channel=latest/candidate
+          mv "$(ls juju-norma_*.charm | head -1)" juju-norma_amd64.charm
+      - name: Download built artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-artifacts
+      - name: Generate SHA256SUMS
+        run: |
+          sha256sum juju-norma_amd64.charm juju-norma-subordinate_amd64.charm norma-linux-amd64 \
+            | tee SHA256SUMS
+      - name: Attest build provenance
+        # SLSA provenance for both charms and the binary; verify with
+        # `gh attestation verify <file> --owner sinanawad`.
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            juju-norma_amd64.charm
+            juju-norma-subordinate_amd64.charm
+            norma-linux-amd64
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            juju-norma_amd64.charm \
+            juju-norma-subordinate_amd64.charm \
+            norma-linux-amd64 \
+            SHA256SUMS
