@@ -7,6 +7,9 @@ import pytest
 
 from .conftest import APP
 
+# Every action test here is read-only/fast and container-safe — per-PR smoke subset.
+pytestmark = pytest.mark.smoke
+
 
 class TestReadOnlyActions:
     def test_get_version(self, juju: jubilant.Juju):

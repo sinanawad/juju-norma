@@ -1,8 +1,13 @@
 """F3 typed config + F4 status priority (jubilant, LXD)."""
 
 import jubilant
+import pytest
 
 from .conftest import APP
+
+# Config + status-priority are container-safe and fast on the shared session
+# deployment — part of the per-PR smoke acceptance subset.
+pytestmark = pytest.mark.smoke
 
 
 class TestTypedConfig:

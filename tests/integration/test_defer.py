@@ -3,8 +3,13 @@
 import json
 
 import jubilant
+import pytest
 
 from .conftest import APP
+
+# The defer-gate exercise is a single config change on the shared deployment —
+# container-safe and fast; part of the per-PR smoke acceptance subset.
+pytestmark = pytest.mark.smoke
 
 
 class TestDefer:
