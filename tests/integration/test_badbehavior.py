@@ -52,7 +52,13 @@ class TestHookErrorAndResolve:
         juju.config(APP, {"bad-behavior-mode": "hook-error"})
         juju.wait(jubilant.any_error, timeout=180)
 
-        # Recover: reset the mode, then resolve the errored unit(s).
+        # Recover: reset the mode, then resolve the errored unit(s). A plain
+        # `resolve` RE-RUNS config-changed so the reconciler completes with
+        # mode=none (repopulating the app-secret etc.). NOTE: this test only runs
+        # in the full `integration` tier (workflow_dispatch / local LXD), not the
+        # stock-runner nightly — on a heavily-loaded shared runner the resolve can
+        # race config propagation into a Juju "resolver loop error". See
+        # docs/CI-REFERENCE.md for why the full suite is not on the nightly.
         juju.config(APP, {"bad-behavior-mode": "none"})
         for unit in juju.status().apps[APP].units:
             with contextlib.suppress(jubilant.CLIError):

@@ -4,30 +4,31 @@ How we want CI/CD to look, distilled from the k8s sibling
 [`juju-norma-k8s`](https://github.com/sinanawad/juju-norma-k8s) `.github/workflows/`
 (6 workflows), adapted to the machine substrate (no ROCK/OCI).
 
-## Scoping decision (2026-05-29)
+## Status (updated 2026-06-08) — CD is now LIVE
 
-**We are pre-publication — no charm version has shipped to CharmHub yet.** So only
-the **CI (validate)** half is in scope now. The entire **CD (publish/promote/
-release)** half is **deferred until we decide to publish `juju-norma` to CharmHub**.
-Building it now would be dead config gated on secrets we don't have.
+The 2026-05-29 "CD deferred until we publish" scoping is **superseded**: the
+`juju-norma` CharmHub name is registered, a manage-scoped `CHARMHUB_TOKEN` secret
+is set, and **rev 1 + `norma-bin` (r2) are released to `latest/edge`**
+(<https://charmhub.io/juju-norma>). Both the CI (validate) and CD (publish/
+promote/release) halves are implemented.
 
-| Sibling workflow | Purpose | Machine-charm relevance | Status here |
-|---|---|---|---|
-| `ci.yaml` | lint / unit / pack / build-rock / integration | **YES** (drop build-rock) | partially have it; gap list below |
-| `rock.yaml` | build ROCK on PR | **N/A** — machine charm has no ROCK/OCI | never needed |
-| `publish-rock.yaml` | push ROCK to ghcr.io | **N/A** — no ROCK | never needed |
-| `publish-edge.yaml` | push charm to `latest/edge` on every main | CD — needs CHARMHUB_TOKEN | **deferred to publish** |
-| `release-tag.yaml` | on `v*` tag: promote edge→candidate, GH Release | CD | **deferred to publish** |
-| `promote.yaml` | manual channel promotion (candidate→stable) | CD | **deferred to publish** |
+| Sibling workflow | Machine-charm equivalent here | Status |
+|---|---|---|
+| `ci.yaml` | `ci.yaml` (lint+gofmt+vet / unit / lib-check / pack +subordinate / workload-build / smoke-integration / nightly+dispatch integration) | **done** — SHA-pinned, `uv lock --check`/`--frozen`, JUnit reports, nightly |
+| `rock.yaml`, `publish-rock.yaml` | **N/A** — no ROCK/OCI; replaced by `build-resource.yaml` (deterministic `norma` binary + SHA256SUMS + SLSA provenance) | **done** |
+| `publish-edge.yaml` | `publish-edge.yaml` — `workflow_run` off CI; `charmcraft upload`→`upload-resource norma-bin`→`release latest/edge` (FILE resource, with retry) | **done, publishing** |
+| `release-tag.yaml` | `release-tag.yaml` — `v*` → promote edge→candidate, build **subordinate** + binary, SLSA-attested GH Release | **done (untriggered until first tag)** |
+| `promote.yaml` | `promote.yaml` — manual candidate→stable | **done** |
 
 Machine note: the sibling's "sudoer variant" swap (`charmcraft-sudoer.yaml`) is
 k8s-only (charm-user). Our analogue is the **subordinate** charm (`subordinate/`),
-which we already pack as a second artifact.
+built as the second release artifact.
 
-## CI gaps vs the sibling (actionable now, no secrets needed)
+## CI gaps vs the sibling — ALL ADOPTED (2026-06-08)
 
-Our current `ci.yaml` has lint / unit / workload-build / pack / integration. The
-sibling's `ci.yaml` is the better model. Adopt:
+The list below is now **done** (`fetch-libs`, `enable-cache`, artifact uploads,
+`setup-lxd` in pack, the 4.0 matrix, subordinate pack, `needs:` chaining), kept as
+a record of what was closed:
 
 1. **`charmcraft fetch-libs` before pack** — we now vendor `cos_agent` (committed
    under `lib/`), but a clean CI runner should `fetch-libs` so the pack matches a
@@ -78,23 +79,30 @@ sibling, which is `workflow_dispatch`-only at one tier):
 Net: the only thing that still wants a richer runner is the **VM/nesting subset**,
 not "LXD in CI" wholesale.
 
-## Suggestions for improvement (beyond parity)
+## Beyond-parity improvements — DONE (2026-06-08)
 
-- **Split integration with pytest markers** (`-m smoke`) so a cheap subset
-  (deploy → active/idle + a couple of read-only actions) CAN run per-PR on a
-  plain runner, while the full F1–F22 replay stays `workflow_dispatch`/self-hosted.
-  The sibling's own comment suggests this; neither repo does it yet.
-- **Pin actions to SHAs** (supply-chain) rather than `@main`
-  (`canonical/setup-lxd@main`) — the sibling pins charming-actions to `@2.7.0`
-  but uses `@main` for setup-lxd; pin both.
-- **Dependabot** for GitHub Actions + uv + the `workload/` Go module
-  (constitution CI/CD section calls for this; not present in either repo's CI).
-- **lib-check job** — `charmcraft fetch-libs --format json` diff to fail when a
-  vendored lib drifts from upstream (relevant now that we vendor `cos_agent`).
+- **pytest `-m smoke` split** — done; 24 container-safe tests run per-PR, the full
+  37 run nightly/dispatch.
+- **SHA-pinned actions** — done; every `uses:` is a commit SHA (`# vX`).
+- **Dependabot** — done; GitHub Actions + `uv` + the `workload/` gomod module.
+- **lib-check job** — done; `canonical/charming-actions/check-libraries` fails on
+  `cos_agent` drift (needs the read-only side of `CHARMHUB_TOKEN`).
+- **Nightly** — done; `schedule:` cron (04:00 UTC) runs the **reliable smoke tier**
+  across `4.0/stable` + `4.0/edge` (edge = engine-under-test). It has its OWN
+  concurrency group (keyed by event + run id) so a routine push can't cancel it.
+  The full F1-F22 suite is **not** on the nightly — it is reliably green on a real
+  LXD host (local) but flaky on a stock shared runner (heavy / error-driving /
+  dynamic-storage tests race Juju timing under load), so it stays
+  `workflow_dispatch` for local LXD / a future capable runner.
 
-## When we DO publish
+## Publishing (live)
 
-Lift `publish-edge` / `release-tag` / `promote` from the sibling almost verbatim,
-substituting: charm name `juju-norma` (no `-k8s`), drop all ROCK/OCI steps, and
-swap the "sudoer variant" build for the "subordinate" build. Requires a
-`CHARMHUB_TOKEN` secret and a registered `juju-norma` CharmHub name.
+`publish-edge` / `release-tag` / `promote` exist and work: charm `juju-norma` (no
+`-k8s`), no ROCK/OCI, subordinate as the second artifact, and the FILE-resource
+flow (`charmcraft upload` → `upload-resource norma-bin` → `release`) since
+`charming-actions/upload-charm` only auto-handles oci-image. The provenance spine
+is `build-resource.yaml` (SHA256SUMS + SLSA on the binary). `CHARMHUB_TOKEN` is set
+(manage scope) and the name is registered. First edge release: rev 1 + norma-bin r2.
+**Still ROADMAP:** a capable / self-hosted runner so the full F1-F22 suite (incl.
+the KVM/nested-lxd tier) can run nightly too, and the first `v*` tag to exercise
+`release-tag`.
