@@ -13,6 +13,10 @@ import pytest
 from .conftest import APP
 
 
+# The read-only filesystem-store check is container-safe + fast (LXD provisions
+# filesystem storage) — per-PR smoke. The dynamic add/detach/attach cycle and
+# block-storage cases are slower / not LXD-verifiable, so they stay full-suite-only.
+@pytest.mark.smoke
 class TestFilesystemStorage:
     def test_check_storage_data_attached(self, juju: jubilant.Juju):
         task = juju.run(f"{APP}/leader", "check-storage", params={"name": "data"})

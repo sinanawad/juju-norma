@@ -5,8 +5,13 @@ not exercised here; see docs/FINDINGS.md.
 """
 
 import jubilant
+import pytest
 
 from .conftest import APP
+
+# expose/unexpose + open-port checks are container-safe and fast — per-PR smoke
+# subset. (Multi-space binding stays out — it needs MAAS; see module docstring.)
+pytestmark = pytest.mark.smoke
 
 
 class TestExpose:

@@ -1,8 +1,12 @@
 """F10 secrets lifecycle (jubilant, LXD)."""
 
 import jubilant
+import pytest
 
 from .conftest import APP
+
+# Read-only secret introspection — container-safe and fast; per-PR smoke subset.
+pytestmark = pytest.mark.smoke
 
 
 class TestSecrets:
