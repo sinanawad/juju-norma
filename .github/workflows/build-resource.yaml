@@ -1,0 +1,100 @@
+name: Build resource
+
+# Builds the `norma` workload binary — the charm's `norma-bin` FILE resource — for
+# every supported arch with deterministic flags (CGO_ENABLED=0, -trimpath), emits
+# SHA256SUMS, and attaches SLSA build provenance to the binary.
+#
+# This is the MACHINE-charm replacement for the k8s sibling's rock / publish-rock
+# path: there is no OCI image, no registry, no manifest list. The workload is a
+# compiled binary attached as a file resource, so the binary itself is the trust
+# anchor — hence checksums + provenance on the binary, not an image.
+#
+# Reusable via workflow_call (release-tag will invoke it). Runs on push to main
+# and on PRs that touch the workload/build; PRs validate the build matrix but skip
+# attestation (provenance needs OIDC write, unavailable to fork PRs).
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.jujuignore'
+  pull_request:
+    paths:
+      - 'workload/**'
+      - 'Makefile'
+      - '.github/workflows/build-resource.yaml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version stamped into the binary (default: main-<shortsha>)"
+        required: false
+        default: ''
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: false
+        default: ''
+
+concurrency:
+  group: build-resource-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build norma (${{ matrix.goarch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # OIDC, required to mint SLSA build provenance
+      attestations: write # write the provenance attestation
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: workload/go.mod
+      - name: Resolve version
+        id: ver
+        run: |
+          v="${{ inputs.version }}"
+          [ -z "$v" ] && v="main-$(git rev-parse --short HEAD)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Build deterministic static binary
+        # CGO_ENABLED=0 + netgo/osusergo + -trimpath → a static, path-independent
+        # binary that cross-compiles arm64 without a toolchain. amd64 is the one the
+        # charm attaches as norma-bin today; arm64 validates the declared platform.
+        run: make build-workload VERSION=${{ steps.ver.outputs.version }} GOARCH=${{ matrix.goarch }}
+      - name: Stage artifact + checksum
+        run: |
+          out="norma-linux-${{ matrix.goarch }}"
+          mv norma "$out"
+          sha256sum "$out" | tee "$out.sha256"
+      - name: Attest build provenance
+        # SLSA provenance bound to the binary (the file resource is the trust
+        # anchor). Skipped on PRs — fork PRs lack OIDC write; verify a built
+        # artifact later with `gh attestation verify norma-linux-amd64 --owner sinanawad`.
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: norma-linux-${{ matrix.goarch }}
+      - name: Upload resource artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: norma-linux-${{ matrix.goarch }}
+          path: |
+            norma-linux-${{ matrix.goarch }}
+            norma-linux-${{ matrix.goarch }}.sha256
+          if-no-files-found: error

@@ -2,6 +2,9 @@
 
 # Version stamped into the workload binary; override with `make build-workload VERSION=x.y.z`.
 VERSION ?= dev
+# Target arch for the workload binary; override for cross-builds (e.g. GOARCH=arm64).
+# Defaults to the host arch so local builds and the CI workload-build job are native.
+GOARCH ?= $(shell go env GOARCH)
 
 lint:
 	uv run ruff check src/ tests/
@@ -35,7 +38,7 @@ integration-setup:
 # Build the static workload binary for attaching as the `norma-bin` file
 # resource: `juju deploy ./juju-norma_amd64.charm --resource norma-bin=./norma`.
 build-workload:
-	cd workload && CGO_ENABLED=0 go build -tags "osusergo,netgo" \
+	cd workload && CGO_ENABLED=0 GOARCH=$(GOARCH) go build -trimpath -tags "osusergo,netgo" \
 		-ldflags="-s -w -X main.version=$(VERSION)" -o ../norma ./...
 
 clean:
