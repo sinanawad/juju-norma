@@ -38,7 +38,9 @@ Thumbs.db
 # Docker
 workload/Dockerfile
 
-# Secrets (never commit)
+# Secrets (never commit) — incl. charmcraft credential exports
 *-token.txt
+*-creds.txt
 *.token
 charmhub-token.txt
+charmhub-creds.txt
