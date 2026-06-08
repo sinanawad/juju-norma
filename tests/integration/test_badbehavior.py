@@ -52,9 +52,14 @@ class TestHookErrorAndResolve:
         juju.config(APP, {"bad-behavior-mode": "hook-error"})
         juju.wait(jubilant.any_error, timeout=180)
 
-        # Recover: reset the mode, then resolve the errored unit(s).
+        # Recover: reset the mode, then resolve the errored unit(s) with
+        # --no-retry. A plain `resolve` RE-RUNS the failed config-changed hook; on
+        # a slow runner it can re-run before bad-behavior-mode=none has propagated,
+        # so the old hook-error config fires again → Juju "resolver loop error"
+        # (observed ~20 min to clear in CI). --no-retry marks the failed hook
+        # resolved and lets the queued (mode=none) config-changed run cleanly.
         juju.config(APP, {"bad-behavior-mode": "none"})
         for unit in juju.status().apps[APP].units:
             with contextlib.suppress(jubilant.CLIError):
-                juju.cli("resolve", unit, include_model=True)  # already resolved → ignore
+                juju.cli("resolve", unit, "--no-retry", include_model=True)
         juju.wait(jubilant.all_active, timeout=300)

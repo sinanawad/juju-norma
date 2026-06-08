@@ -10,11 +10,17 @@ on:
       - 'LICENSE'
       - '.gitignore'
       - '.jujuignore'
+  schedule:
+    # Nightly full F1-F22 integration matrix — engine regressions surface here
+    # even with no push (the calibration charm's core mission).
+    - cron: "0 4 * * *"
   workflow_dispatch:
 
-# Cancel a superseded run (e.g. on force-push) instead of burning a 2nd pipeline.
+# Push/PR runs cancel a superseded run of the same ref. Scheduled + dispatch FULL
+# runs get a UNIQUE group (per run id) so a routine push can never cancel the
+# nightly mid-flight (the lesson from a merge cancelling a dispatch validation).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.run_id || 'shared' }}
   cancel-in-progress: true
 
 # Least-privilege GITHUB_TOKEN: no job needs more. Grant per-job if ever required.
@@ -185,12 +191,11 @@ jobs:
     name: Integration (${{ matrix.juju-channel }})
     runs-on: ubuntu-24.04
     needs: [unit, pack, workload-build]
-    # workflow_dispatch-only: this is the FULL F1-F22 suite. Per-PR container
-    # acceptance already runs in `smoke-integration` above (stock runner). This
-    # tier additionally covers the cases that need more than a stock runner —
-    # virt-type=virtual-machine (KVM) and nested --to lxd:N — and benefits from a
-    # self-hosted / nested-virt runner. See docs/CI-REFERENCE.md.
-    if: github.event_name == 'workflow_dispatch'
+    # Nightly (schedule) + on-demand (workflow_dispatch): the FULL F1-F22 suite.
+    # Per-PR container acceptance already runs in `smoke-integration` above. A few
+    # cases (virt-type=virtual-machine KVM, nested --to lxd:N) still need more than
+    # a stock runner and a capable runner; they stay ROADMAP. See docs/CI-REFERENCE.md.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     timeout-minutes: 90
     strategy:
       fail-fast: false
