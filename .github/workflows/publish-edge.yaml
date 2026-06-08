@@ -1,0 +1,77 @@
+name: Publish to latest/edge
+
+# Continuous publish: after CI succeeds on main, build the norma binary, pack the
+# charm, and release a fresh revision to latest/edge with the `norma-bin` FILE
+# resource attached — so consumers (notably Juju CI, per docs/juju-ci-consumption.md
+# Mode B) always have the bleeding edge. Promotion to candidate/stable happens via
+# release-tag.yaml (git tags) or promote.yaml (manual).
+#
+# MACHINE-charm specifics vs the k8s sibling: there is no ROCK/OCI image and no
+# workflow_run off publish-rock. The workload is a FILE resource, so we cannot use
+# charming-actions/upload-charm (it only auto-uploads oci-image resources); instead
+# we use explicit `charmcraft upload-resource` + `upload` + `release`. Chained off
+# the CI workflow (not a push trigger) so a broken commit never ships to edge.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Serialize CharmHub edge uploads so two publishes can't race the channel
+  # pointer. Never cancel an in-flight upload — let it finish; the newest pending
+  # run wins after.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish charm + norma-bin resource to latest/edge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Only after a green CI run, or any manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0 # charm `version` part needs git history
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: workload/go.mod
+      - name: Setup LXD
+        uses: canonical/setup-lxd@8c6a87bfb56aa48f3fb9b830baa18562d8bfd4ee # v1
+      - name: Install charmcraft
+        # latest/stable (4.x lives here; there is no 4.x track to pin to).
+        run: sudo snap install charmcraft --classic
+      - name: Build workload binary (the norma-bin file resource)
+        run: make build-workload VERSION=edge-$(git rev-parse --short HEAD)
+      - name: Fetch charm libs
+        run: charmcraft fetch-libs
+      - name: Pack charm
+        run: charmcraft pack -v
+      - name: Upload resource + charm, release to latest/edge
+        env:
+          CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          charm=$(ls juju-norma_amd64.charm)
+          # FILE resource: upload the binary, capture its numbered revision.
+          res_rev=$(charmcraft upload-resource juju-norma norma-bin \
+            --filepath ./norma --format json | jq -r '.revision')
+          echo "norma-bin resource revision: $res_rev"
+          # Upload the charm, capture its revision.
+          charm_rev=$(charmcraft upload "$charm" --format json | jq -r '.revision')
+          echo "charm revision: $charm_rev"
+          # Release the charm revision to edge with the resource bound to it.
+          charmcraft release juju-norma \
+            --revision "$charm_rev" \
+            --channel latest/edge \
+            --resource norma-bin:"$res_rev"
