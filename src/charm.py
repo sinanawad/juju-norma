@@ -649,8 +649,13 @@ class NormaCharm(ops.CharmBase):
         run_op("file-exists", op_file_exists)
         run_op("file-remove", op_file_remove)
         run_op("service-status", op_service_status)
-        run_op("service-restart", op_service_restart)
+        # binary-check (norma --check → HTTP GET /health) MUST run before
+        # service-restart: the unit is Type=simple, so `systemctl restart` returns
+        # the instant the process forks — before the server binds its port. Probing
+        # the steady-state server first avoids racing the restart (which otherwise
+        # intermittently fails the self-probe on a slow/loaded host, e.g. CI).
         run_op("binary-check", op_binary_check)
+        run_op("service-restart", op_service_restart)
         shutil.rmtree(tmpdir, ignore_errors=True)
 
         results["summary"] = f"{passed}/{total} passed"

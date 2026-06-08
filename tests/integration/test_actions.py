@@ -48,11 +48,16 @@ class TestWorkloadOps:
         """F5b: systemd + file + subprocess suite on the host."""
         task = juju.run(f"{APP}/leader", "test-workload-ops")
         assert "passed" in task.results["summary"]
-        # All seven ops pass on a healthy live unit.
-        assert (
-            task.results["summary"].split("/")[0]
-            == task.results["summary"].split("/")[1].split()[0]
+        # All seven ops pass on a healthy live unit. On failure, name the
+        # offending op(s) + error rather than an opaque '6' == '7'.
+        passed, total = (
+            task.results["summary"].split("/")[0],
+            task.results["summary"].split("/")[1].split()[0],
         )
+        failures = {
+            k: v for k, v in task.results.items() if isinstance(v, str) and v.startswith("fail")
+        }
+        assert passed == total, f"workload-ops {passed}/{total}; failures={failures}"
 
 
 class TestFailAndStatus:
