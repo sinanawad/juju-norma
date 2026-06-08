@@ -63,13 +63,16 @@ jobs:
         run: |
           set -euo pipefail
           charm=$(ls juju-norma_amd64.charm)
-          # FILE resource: upload the binary, capture its numbered revision.
+          # Upload the CHARM first: CharmHub only learns the charm's declared
+          # resources (norma-bin) from an uploaded revision's metadata. On a
+          # brand-new charm, uploading the resource first is rejected with
+          # "Resource does not exist for resource revision at index 0".
+          charm_rev=$(charmcraft upload "$charm" --format json | jq -r '.revision')
+          echo "charm revision: $charm_rev"
+          # Now the FILE resource is known — upload the binary, capture its revision.
           res_rev=$(charmcraft upload-resource juju-norma norma-bin \
             --filepath ./norma --format json | jq -r '.revision')
           echo "norma-bin resource revision: $res_rev"
-          # Upload the charm, capture its revision.
-          charm_rev=$(charmcraft upload "$charm" --format json | jq -r '.revision')
-          echo "charm revision: $charm_rev"
           # Release the charm revision to edge with the resource bound to it.
           charmcraft release juju-norma \
             --revision "$charm_rev" \

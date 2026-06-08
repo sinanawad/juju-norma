@@ -208,7 +208,15 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: workload
-      - run: uv sync --extra dev --frozen
+      # The FULL suite deploys the packed charm(s) too, not just the binary — the
+      # conftest globs juju-norma_*.charm (+ subordinate/*.charm). Without this the
+      # whole suite errors "No juju-norma_*.charm found; run charmcraft pack".
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: charms
+      - run: |
+          uv sync --extra dev --frozen
+          chmod +x norma
       # Lean LXD + Juju (machine charm — no k8s tooling).
       - name: Set up LXD
         uses: canonical/setup-lxd@8c6a87bfb56aa48f3fb9b830baa18562d8bfd4ee # v1
