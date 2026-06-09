@@ -96,6 +96,19 @@ Every event (install, start, config-changed, relation-*, storage-*, secret-*, up
 
 ### Project-specific Juju notes
 
-- **Dev/CI cloud**: LXD (local + CI). User has LXD locally; `~/go/bin/juju` is 4.0.6.
+- **Dev/CI cloud**: LXD (local + CI). User has LXD locally.
+- **Local Juju 4.0 binary — USE THIS**: `/data/dev/juju/_bin/juju` (source build of the `4.0`
+  worktree; currently **4.0.12**). The bare `juju` on PATH is `/snap/bin/juju` = **3.6.23** —
+  do NOT use it for 4.0 work. Local juju-norma integration run:
+  `JUJU_CLI=/data/dev/juju/_bin/juju JUJU_CONTROLLER=lxd make integration` — reuse the existing
+  `lxd` controller (released 4.0.10.1 agent + 4.0.12 source client). CI keeps using the PATH 4.0 snap.
+  CAUTION: the conftest does `juju switch <JUJU_CONTROLLER>`, changing the GLOBAL current controller;
+  the user's parallel play is on the `k8s` controller (the k8s sibling), so switch back
+  (`juju switch k8s`) afterward — or target `lxd` explicitly with `-m lxd:<model>` — to not disturb it.
+  3.6↔4.0 delta checks: `/data/dev/juju-3.6/_bin/juju`.
 - **jubilant quirks**: `j.cli()` auto-injects `--model` — use `include_model=False` for `destroy-model`, `add-model`. `temp_model()` doesn't accept `cli_binary`.
-- **Verify against 4.0**: Juju source at `/data/dev/juju` (branch `4.0`). Re-confirm any capability before targeting it; charm meta/hooks live in `domain/deployment/charm/` in 4.0.
+- **Verify against 4.0**: Juju 4.0 source is the `/data/dev/juju` git worktree (branch `4.0`).
+  Sibling worktrees on this machine: `/data/dev/juju-3.6` [3.6], `/data/dev/juju-main` [main],
+  `/data/dev/juju-tests` [4.0-tests] — each with its own `_bin/` (use the matching one for 3.6↔4.0
+  comparisons). Re-confirm any capability before targeting it; charm meta/hooks live in
+  `domain/deployment/charm/` in 4.0.
