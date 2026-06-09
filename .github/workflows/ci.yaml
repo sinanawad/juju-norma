@@ -11,9 +11,12 @@ on:
       - '.gitignore'
       - '.jujuignore'
   schedule:
-    # Nightly full F1-F22 integration matrix — engine regressions surface here
-    # even with no push (the calibration charm's core mission).
-    - cron: "0 4 * * *"
+    # Nightly RELIABLE smoke tier across 4.0/stable + 4.0/edge (engine-under-test;
+    # regressions surface here even with no push). The full F1-F22 suite stays
+    # workflow_dispatch (flaky on stock runners) — see docs/CI-REFERENCE.md.
+    # Off-the-hour minute on purpose: GitHub frequently drops/delays scheduled runs
+    # at the top of the hour (':00') under load, so use ':19'.
+    - cron: "19 4 * * *"
   workflow_dispatch:
 
 # Push/PR runs cancel a superseded run of the same ref. Scheduled + dispatch FULL
