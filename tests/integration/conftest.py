@@ -173,12 +173,14 @@ def juju(environment_ready, charm_path, workload_bin):
     """
     model = _env("JUJU_MODEL")
     cli = _env("JUJU_CLI")
-    # Controller/cloud are OPTIONAL: when unset we operate on the CURRENT
-    # controller (what `actions-operator` bootstraps + switches to in CI, or the
-    # active local controller). Only switch/target a named controller/cloud when
-    # explicitly requested. Hardcoding "lxd"/"localhost" broke CI, where the
-    # bootstrapped controller has a generated name → "controller lxd not found".
-    controller = _env("JUJU_CONTROLLER")
+    # Controller/cloud targeting: JUJU_CONTROLLER and JUJU_CLOUD are NATIVE Juju
+    # env-var overrides — when set, Juju targets that controller for THIS process
+    # WITHOUT changing the global `juju switch` selection. So we must NOT
+    # `juju switch <JUJU_CONTROLLER>`: Juju rejects it ("cannot switch when
+    # JUJU_CONTROLLER is overriding the controller"), and the override already
+    # makes bare model names + add-model resolve there. When unset, we operate on
+    # the CURRENT controller (what CI bootstraps + switches to). Hardcoding
+    # "lxd"/"localhost" broke CI (the bootstrapped controller has a generated name).
     cloud = _env("JUJU_CLOUD")
     keep = _env("KEEP_MODEL") == "1"
     resources = {RESOURCE_NAME: str(workload_bin)}
@@ -195,9 +197,8 @@ def juju(environment_ready, charm_path, workload_bin):
     # down with --force --no-wait so an errored unit can never wedge cleanup.
     binary = cli or "juju"
     no_model = jubilant.Juju(cli_binary=binary)
-    if controller:
-        # Make the requested controller current so bare model names resolve.
-        no_model.cli("switch", controller, include_model=False)
+    # No `juju switch` here — JUJU_CONTROLLER (if set) is a native per-process
+    # override; add-model + all later commands resolve to it automatically.
     model_name = f"norma-{uuid.uuid4().hex[:8]}"
     add_args = ["add-model", model_name]
     if cloud:
