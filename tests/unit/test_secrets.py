@@ -8,6 +8,7 @@ not require a norma-bin resource.
 import ops
 import ops.testing
 
+import norma
 import workload_driver
 from charm import NormaCharm
 
@@ -211,6 +212,60 @@ class TestSecretForensics:
         )
         assert ctx.action_results["has-content"] == "true"
         assert ctx.action_results["error"] == ""
+
+    def test_stale_pointer_repaired_by_label(self, monkeypatch):
+        """FINDINGS#1: when the by-id lookup lies but the secret EXISTS, the
+        self-heal must repair the pointer via label — never re-create (a
+        re-create can't commit while the label is held: 'already exists')."""
+        _ready(monkeypatch)
+        existing = ops.testing.Secret(
+            {"password": "pw"}, owner="app", label="calibration-password"
+        )
+        peer = ops.testing.PeerRelation(
+            endpoint="norma-peers", local_app_data={"secret-id": "secret:stale123"}
+        )
+        ctx = ops.testing.Context(NormaCharm)
+        with ctx(
+            ctx.on.config_changed(),
+            ops.testing.State(relations={peer}, secrets={existing}, leader=True),
+        ) as mgr:
+            out = mgr.run()
+            ledger = list(mgr.charm._event_ledger)
+        assert out.get_relation(peer.id).local_app_data["secret-id"] == existing.id
+        assert len(out.secrets) == 1  # repaired, NOT re-created
+        repaired = [e for e in ledger if e["event_name"] == "secret-pointer-repaired"]
+        assert repaired and repaired[0]["extra"]["stale-id"] == "secret:stale123"
+
+    def test_recreate_loop_suppressed(self, monkeypatch):
+        """FINDINGS#1 anomaly 2: if WE minted the current stale pointer in a
+        prior (never-committed) self-heal, re-creating again would error-loop
+        forever — the ledger loop-detector must suppress and keep the hook
+        green."""
+        _ready(monkeypatch)
+        norma.write_event_ledger(
+            [
+                {
+                    "timestamp": "2026-06-10T07:51:28+00:00",
+                    "event_name": "secret-recreated",
+                    "unit_name": "juju-norma/0",
+                    "extra": {"stale-id": "secret:orig", "new-id": "secret:phantom1"},
+                }
+            ]
+        )
+        peer = ops.testing.PeerRelation(
+            endpoint="norma-peers", local_app_data={"secret-id": "secret:phantom1"}
+        )
+        ctx = ops.testing.Context(NormaCharm)
+        with ctx(
+            ctx.on.config_changed(),
+            ops.testing.State(relations={peer}, leader=True),
+        ) as mgr:
+            out = mgr.run()
+            ledger = list(mgr.charm._event_ledger)
+        assert len(out.secrets) == 0  # no blind re-create
+        # Pointer untouched (recovery retried on a later event).
+        assert out.get_relation(peer.id).local_app_data["secret-id"] == "secret:phantom1"
+        assert any(e["event_name"] == "secret-recreate-suppressed" for e in ledger)
 
     def test_stale_pointer_self_heals_with_ledger_entry(self, monkeypatch):
         """A vanished secret no longer poisons the pointer forever (charm.py

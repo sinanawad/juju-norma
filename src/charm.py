@@ -884,32 +884,9 @@ class NormaCharm(ops.CharmBase):
         try:
             secret = self.model.get_secret(id=secret_id)
         except ops.SecretNotFoundError:
-            # The stored pointer is STALE: peer data names a secret the model no
-            # longer resolves (observed live as the full-suite test_secrets
-            # artifact; suspected engine-side — see FINDINGS). Self-heal by
-            # re-creating, and ledger it LOUDLY so the anomaly stays countable
-            # and attributable instead of silently poisoning every later probe.
-            try:
-                new_secret = self.app.add_secret(
-                    {"password": secrets.token_urlsafe(24)},
-                    label="calibration-password",
-                    rotate=ops.SecretRotate.MONTHLY,
-                )
-            except ops.ModelError as exc:
-                # E.g. transient lease loss, or the label still being held by a
-                # not-actually-gone secret. Keep the hook alive (this path also
-                # runs during relation teardown) but record the refusal class.
-                self._log_event(
-                    "secret-recreate-failed",
-                    {"stale-id": secret_id, "error": f"{type(exc).__name__}: {exc}"},
-                )
+            secret = self._recover_app_secret(peer, secret_id)
+            if secret is None:
                 return
-            peer.data[self.app]["secret-id"] = new_secret.id
-            self._log_event(
-                "secret-recreated",
-                {"stale-id": secret_id, "new-id": new_secret.id or ""},
-            )
-            secret = new_secret
         for rel in self.model.relations.get("calibration-provider", []):
             # grant/revoke can fail while a relation is departing/breaking.
             try:
@@ -919,6 +896,71 @@ class NormaCharm(ops.CharmBase):
                     secret.grant(rel)
             except ops.ModelError:
                 logger.debug("Secret grant/revoke on relation %s skipped (departing)", rel.id)
+
+    def _recover_app_secret(self, peer: ops.Relation, stale_id: str) -> ops.Secret | None:
+        """FINDINGS#1 recovery: the stored secret-id no longer resolves.
+
+        Live forensics (docs/FINDINGS.md, FINDINGS#1; juju 4.0.10.1) proved two
+        engine anomalies: (1) in-hook SecretNotFoundError for an app-owned
+        secret that still EXISTS (leader's peer relation-joined during
+        scale-up); (2) non-atomic CommitHookChanges — a FAILED hook's
+        relation-set persists, so a blind re-create poisons the pointer with a
+        never-committed id and every later hook error-loops at commit
+        ("secret with label ... already exists").
+
+        Therefore, in order:
+        1. REPAIR by label — the commit rejection itself proves a label lookup
+           can succeed while the by-id lookup lies. Cheap, idempotent, loud.
+        2. SUPPRESS re-creation if the ledger shows WE minted the current
+           (stale) pointer in a prior self-heal — that means the create never
+           committed and re-creating would loop forever (anomaly 2 makes the
+           phantom pointer durable). Recovery is retried on the next event.
+        3. RE-CREATE only when the label is genuinely free (secret truly gone).
+        """
+        repaired = None
+        repaired_id = ""
+        try:
+            repaired = self.model.get_secret(label="calibration-password")
+            # A by-label lookup can return a Secret with id=None — resolve the
+            # canonical id via owner introspection before writing the pointer
+            # (a None databag write would itself crash the hook).
+            repaired_id = repaired.id or repaired.get_info().id
+        except (ops.SecretNotFoundError, ops.ModelError):
+            repaired = None
+        if repaired is not None and repaired_id:
+            peer.data[self.app]["secret-id"] = repaired_id
+            self._log_event(
+                "secret-pointer-repaired",
+                {"stale-id": stale_id, "id": repaired_id},
+            )
+            return repaired
+        if any(
+            e.get("event_name") == "secret-recreated"
+            and e.get("extra", {}).get("new-id") == stale_id
+            for e in self._event_ledger[-20:]
+        ):
+            self._log_event("secret-recreate-suppressed", {"stale-id": stale_id})
+            return None
+        try:
+            new_secret = self.app.add_secret(
+                {"password": secrets.token_urlsafe(24)},
+                label="calibration-password",
+                rotate=ops.SecretRotate.MONTHLY,
+            )
+        except ops.ModelError as exc:
+            # Keep the hook alive (this path also runs during relation
+            # teardown) but record the refusal class for the ledger.
+            self._log_event(
+                "secret-recreate-failed",
+                {"stale-id": stale_id, "error": f"{type(exc).__name__}: {exc}"},
+            )
+            return None
+        peer.data[self.app]["secret-id"] = new_secret.id
+        self._log_event(
+            "secret-recreated",
+            {"stale-id": stale_id, "new-id": new_secret.id or ""},
+        )
+        return new_secret
 
     @staticmethod
     def _write_if_changed(databag, values: dict[str, str]) -> None:
