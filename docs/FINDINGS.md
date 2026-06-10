@@ -239,9 +239,30 @@ label, persistently, while `juju secrets` lists it alive controller-side ⇒
 wholesale unit-agent-side secret-resolution loss, not a stale id index.
 test_secrets still fails — correctly: it reports a real engine state.
 
-**Next probes**: (1) tip-built controller (4.0 branch ≥ `938afc5120`) — re-run
-to classify "live bug" vs "since-fixed; backport candidate" (the new
-`repair-error` ledger field will also say WHY repair fails: NotFound vs lease);
-(2) after classification, P2-11 disposition for the full tier (xfail citing
-FINDINGS#1 vs keep-red). Upstream filing is gated (PX-3) — this dossier is the
-ready-to-file artifact.
+**TIP CLASSIFICATION (run 4, controller built from 4.0 @ `0c7e2b4e5b`,
+agent 4.0.12.1, 2026-06-10)** — the two anomalies SPLIT:
+
+- **Anomaly 2 (non-atomic CommitHookChanges): FIXED on tip.** All 17 recreate
+  attempts carry `stale-id` = the REAL secret (`ul4qg30…`) — the pointer never
+  went phantom across 17 failed commits (vs the 12-link phantom chain on
+  4.0.10.1). Rollback works. Reclassified: *since-fixed between 4.0.10.1 and
+  `0c7e2b4e5b`* — backport-audit question for released 4.0.x.
+- **Anomaly 1 (unit-agent resolution loss): LIVE on tip.** Same trigger
+  (leader's peer relation-joined, scale-up 1→2); by-id AND by-label both
+  `SecretNotFoundError` (empty message — NOT lease; `repair-error` field
+  proves it) for ≥78 minutes (fresh probe 10:59Z), while `juju secrets`
+  serves the secret throughout. Deterministic 4/4 across both controllers.
+  **This is the headline unfiled bug.**
+- Charm-side: detector v3 (suppress when a prior attempt exists for the SAME
+  stale pointer) bounds the loop in the rollback world too — run 4 looped 17×
+  because v2 keyed only on the persisted phantom.
+
+Evidence: `.omc/findings/1/run4-tip-{ledger,secrets,debug}.{json,log}`. The
+broken tip model `lxd-tip:norma-c9c68d3b` is KEPT LIVE for hands-on
+inspection (destroy with `juju destroy-model lxd-tip:norma-c9c68d3b
+--no-prompt --force --no-wait` when done; the `lxd-tip` controller can go the
+same way after).
+
+**Next**: P2-11 disposition for the full tier (xfail citing FINDINGS#1 vs
+keep-red) — user decision; upstream filing gated (PX-3), dossier
+ready-to-file.

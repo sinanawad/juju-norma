@@ -939,12 +939,23 @@ class NormaCharm(ops.CharmBase):
                 {"stale-id": stale_id, "id": repaired_id},
             )
             return repaired
-        # Loop detector — scan the FULL ledger: run 3 proved a sliding window
-        # misses the minting entry once suppression events crowd it out (a
-        # second phantom got created at +84s with a [-20:] window).
+        # Loop detector — scan the FULL ledger (run 3: a sliding window misses
+        # the minting entry once suppression events crowd it out). Two loop
+        # worlds, both observed live:
+        #   new-id == stale_id  → 4.0.10.1: the failed hook's relation-set
+        #     PERSISTED (non-atomic commit), pointer became our phantom;
+        #   stale-id == stale_id → 4.0 tip: commit rolls back properly, the
+        #     pointer stays the unresolvable REAL id — but we already attempted
+        #     a re-create for this exact pointer and it cannot commit while the
+        #     label is held (17 looping attempts observed without this guard).
+        # Repair-by-label remains the live retry path on every event, so
+        # suppression never strands a recoverable state.
         if any(
             e.get("event_name") == "secret-recreated"
-            and e.get("extra", {}).get("new-id") == stale_id
+            and (
+                e.get("extra", {}).get("new-id") == stale_id
+                or e.get("extra", {}).get("stale-id") == stale_id
+            )
             for e in self._event_ledger
         ):
             self._log_event(

@@ -271,6 +271,38 @@ class TestSecretForensics:
             "SecretNotFoundError"
         )
 
+    def test_recreate_suppressed_in_rollback_world(self, monkeypatch):
+        """Run-4 (tip) regression: when commits roll back properly, the pointer
+        stays the REAL unresolvable id — the detector must also match a prior
+        attempt's stale-id (17 looping re-creates observed without this)."""
+        _ready(monkeypatch)
+        norma.write_event_ledger(
+            [
+                {
+                    "timestamp": "2026-06-10T10:01:58+00:00",
+                    "event_name": "secret-recreated",
+                    "unit_name": "juju-norma/0",
+                    # Rollback world: stale-id is the REAL pointer; the minted
+                    # new-id never committed and never became the pointer.
+                    "extra": {"stale-id": "secret:real1", "new-id": "secret:phantom1"},
+                }
+            ]
+        )
+        peer = ops.testing.PeerRelation(
+            endpoint="norma-peers", local_app_data={"secret-id": "secret:real1"}
+        )
+        ctx = ops.testing.Context(NormaCharm)
+        with ctx(
+            ctx.on.config_changed(),
+            ops.testing.State(relations={peer}, leader=True),
+        ) as mgr:
+            out = mgr.run()
+            ledger = list(mgr.charm._event_ledger)
+        assert len(out.secrets) == 0  # second attempt suppressed
+        recreated = [e for e in ledger if e["event_name"] == "secret-recreated"]
+        assert len(recreated) == 1  # only the seeded attempt
+        assert any(e["event_name"] == "secret-recreate-suppressed" for e in ledger)
+
     def test_loop_detector_scans_full_ledger(self, monkeypatch):
         """Run-3 regression: with a sliding [-20:] window, suppression events
         crowd out the minting entry and a SECOND phantom gets created. The
