@@ -919,14 +919,19 @@ class NormaCharm(ops.CharmBase):
         """
         repaired = None
         repaired_id = ""
+        repair_error = ""
         try:
             repaired = self.model.get_secret(label="calibration-password")
             # A by-label lookup can return a Secret with id=None — resolve the
             # canonical id via owner introspection before writing the pointer
             # (a None databag write would itself crash the hook).
             repaired_id = repaired.id or repaired.get_info().id
-        except (ops.SecretNotFoundError, ops.ModelError):
+        except (ops.SecretNotFoundError, ops.ModelError) as exc:
+            # Record WHY repair failed (run 3 showed by-label resolution breaks
+            # too — distinguishing NotFound from e.g. "lease not held" is the
+            # forensic payload).
             repaired = None
+            repair_error = f"{type(exc).__name__}: {exc}"
         if repaired is not None and repaired_id:
             peer.data[self.app]["secret-id"] = repaired_id
             self._log_event(
@@ -934,12 +939,18 @@ class NormaCharm(ops.CharmBase):
                 {"stale-id": stale_id, "id": repaired_id},
             )
             return repaired
+        # Loop detector — scan the FULL ledger: run 3 proved a sliding window
+        # misses the minting entry once suppression events crowd it out (a
+        # second phantom got created at +84s with a [-20:] window).
         if any(
             e.get("event_name") == "secret-recreated"
             and e.get("extra", {}).get("new-id") == stale_id
-            for e in self._event_ledger[-20:]
+            for e in self._event_ledger
         ):
-            self._log_event("secret-recreate-suppressed", {"stale-id": stale_id})
+            self._log_event(
+                "secret-recreate-suppressed",
+                {"stale-id": stale_id, "repair-error": repair_error},
+            )
             return None
         try:
             new_secret = self.app.add_secret(
@@ -952,13 +963,21 @@ class NormaCharm(ops.CharmBase):
             # teardown) but record the refusal class for the ledger.
             self._log_event(
                 "secret-recreate-failed",
-                {"stale-id": stale_id, "error": f"{type(exc).__name__}: {exc}"},
+                {
+                    "stale-id": stale_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "repair-error": repair_error,
+                },
             )
             return None
         peer.data[self.app]["secret-id"] = new_secret.id
         self._log_event(
             "secret-recreated",
-            {"stale-id": stale_id, "new-id": new_secret.id or ""},
+            {
+                "stale-id": stale_id,
+                "new-id": new_secret.id or "",
+                "repair-error": repair_error,
+            },
         )
         return new_secret
 
