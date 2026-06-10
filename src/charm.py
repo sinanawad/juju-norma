@@ -259,23 +259,42 @@ class NormaCharm(ops.CharmBase):
 
     def _on_secret_expired(self, event: ops.SecretExpiredEvent) -> None:
         """F10: drop the expired (superseded) revision; never crash the hook."""
-        self._log_event("secret-expired", {"secret-label": event.secret.label or ""})
-        self._drop_revision(event.secret, event.revision)
+        outcome = self._drop_revision(event.secret, event.revision)
+        self._log_event(
+            "secret-expired",
+            {
+                "secret-label": event.secret.label or "",
+                "revision": str(event.revision),
+                "outcome": outcome,
+            },
+        )
 
     def _on_secret_remove(self, event: ops.SecretRemoveEvent) -> None:
         """F10: drop an obsolete revision; never crash the hook."""
-        self._log_event("secret-remove", {"secret-label": event.secret.label or ""})
-        self._drop_revision(event.secret, event.revision)
+        outcome = self._drop_revision(event.secret, event.revision)
+        self._log_event(
+            "secret-remove",
+            {
+                "secret-label": event.secret.label or "",
+                "revision": str(event.revision),
+                "outcome": outcome,
+            },
+        )
 
     @staticmethod
-    def _drop_revision(secret: ops.Secret, revision: int) -> None:
+    def _drop_revision(secret: ops.Secret, revision: int) -> str:
         # ops refuses to remove the latest/only revision (ValueError); in the
         # normal rotate→expire flow the revision is superseded so this succeeds.
-        # Guard so an edge-case expire on a sole revision can't wedge teardown.
+        # Guard so an edge-case expire on a sole revision can't wedge teardown —
+        # but return a forensic outcome ("dropped" | "skipped:<Class>: <msg>")
+        # for the event ledger, so an engine misfire (e.g. remove fired for a
+        # live revision) stays attributable instead of vanishing into a warning.
         try:
             secret.remove_revision(revision)
-        except (ops.ModelError, ValueError):
-            logger.warning("Skipped removing secret revision %s (not removable)", revision)
+        except (ops.ModelError, ValueError) as exc:
+            logger.warning("Skipped removing secret revision %s: %s", revision, exc)
+            return f"skipped:{type(exc).__name__}: {exc}"
+        return "dropped"
 
     # ------------------------------------------------------------------ #
     #  Status collection (F4)                                             #
@@ -466,7 +485,7 @@ class NormaCharm(ops.CharmBase):
         """F10: report the app-owned calibration secret (never the value)."""
         event.log("Retrieving secret info")
         peer = self.model.get_relation("norma-peers")
-        empty = {"secret-id": "", "has-content": "false", "rotation": ""}
+        empty = {"secret-id": "", "has-content": "false", "rotation": "", "error": ""}
         if not peer:
             event.set_results(empty)
             return
@@ -477,13 +496,19 @@ class NormaCharm(ops.CharmBase):
         try:
             content = self.model.get_secret(id=secret_id).get_content(refresh=True)
             has_content = bool(content.get("password"))
-        except (ops.SecretNotFoundError, ops.ModelError):
+            error = ""
+        except (ops.SecretNotFoundError, ops.ModelError) as exc:
+            # Calibration forensics: surface the exception class + message
+            # verbatim (e.g. Juju's "lease not held") instead of erasing the
+            # signal — a has-content=false alone is undiagnosable.
             has_content = False
+            error = f"{type(exc).__name__}: {exc}"
         event.set_results(
             {
                 "secret-id": secret_id,
                 "has-content": str(has_content).lower(),
                 "rotation": "monthly",
+                "error": error,
             }
         )
 
@@ -859,7 +884,32 @@ class NormaCharm(ops.CharmBase):
         try:
             secret = self.model.get_secret(id=secret_id)
         except ops.SecretNotFoundError:
-            return
+            # The stored pointer is STALE: peer data names a secret the model no
+            # longer resolves (observed live as the full-suite test_secrets
+            # artifact; suspected engine-side — see FINDINGS). Self-heal by
+            # re-creating, and ledger it LOUDLY so the anomaly stays countable
+            # and attributable instead of silently poisoning every later probe.
+            try:
+                new_secret = self.app.add_secret(
+                    {"password": secrets.token_urlsafe(24)},
+                    label="calibration-password",
+                    rotate=ops.SecretRotate.MONTHLY,
+                )
+            except ops.ModelError as exc:
+                # E.g. transient lease loss, or the label still being held by a
+                # not-actually-gone secret. Keep the hook alive (this path also
+                # runs during relation teardown) but record the refusal class.
+                self._log_event(
+                    "secret-recreate-failed",
+                    {"stale-id": secret_id, "error": f"{type(exc).__name__}: {exc}"},
+                )
+                return
+            peer.data[self.app]["secret-id"] = new_secret.id
+            self._log_event(
+                "secret-recreated",
+                {"stale-id": secret_id, "new-id": new_secret.id or ""},
+            )
+            secret = new_secret
         for rel in self.model.relations.get("calibration-provider", []):
             # grant/revoke can fail while a relation is departing/breaking.
             try:
