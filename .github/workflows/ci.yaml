@@ -17,6 +17,11 @@ on:
     # Off-the-hour minute on purpose: GitHub frequently drops/delays scheduled runs
     # at the top of the hour (':00') under load, so use ':19'.
     - cron: "19 4 * * *"
+    # Weekly FULL-suite attempt (Sun 05:19 UTC) — flake-data collection for the
+    # "promote the full suite to the nightly" decision (P2-9b). The integration
+    # job runs continue-on-error on schedule so a flaky full run never reddens
+    # the repo, but a failure still files an issue (signal, not noise).
+    - cron: "19 5 * * 0"
   workflow_dispatch:
 
 # Push/PR runs cancel a superseded run of the same ref. Scheduled + dispatch FULL
@@ -153,7 +158,17 @@ jobs:
     # acceptance, AND the nightly (on schedule it also runs 4.0/edge — the
     # engine-under-test, where regressions land first; the calibration value-add).
     # The full F1-F22 suite needs a real LXD host and stays in `integration`
-    # (workflow_dispatch) — it is NOT reliable on a stock shared runner.
+    # (workflow_dispatch + the weekly cron) — it is NOT reliable on a stock shared
+    # runner per-PR.
+    # Skip on the WEEKLY cron: that slot exists for the full suite below, and the
+    # daily 04:19 nightly covered the smoke tier an hour earlier.
+    if: github.event.schedule != '19 5 * * 0'
+    # Workflow default is `permissions: {}` — without the job-level issues:write
+    # grant, the failure-issue step below dies with "Resource not accessible by
+    # integration" INSIDE an already-failing scheduled run (failure into a void).
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -200,24 +215,44 @@ jobs:
           name: ${{ steps.report.outputs.name }}
           path: report.xml
           if-no-files-found: warn
+      # P2-9a: a failed NIGHTLY leg is the repo's core deliverable (an engine
+      # regression sentinel, esp. the 4.0/edge leg) — it must page, not vanish.
+      # Per-leg issue so stable and edge failures are separately attributable.
+      - name: File issue on nightly failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "Nightly smoke (${{ matrix.channel }}) failed — $(date -u +%F)" \
+            --body "Scheduled smoke run failed on \`${{ matrix.channel }}\`. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   integration:
     name: Integration (${{ matrix.juju-channel }})
     runs-on: ubuntu-24.04
     needs: [unit, pack, workload-build]
-    # workflow_dispatch-only: the FULL F1-F22 suite. It is reliably green on a real
-    # LXD host (local), but NOT on a stock shared GitHub runner — the heavy /
-    # error-driving / dynamic-storage tests race Juju timing under load. So the
-    # NIGHTLY runs the reliable smoke tier (below) instead, and the full suite is
-    # run on demand here (local LXD / a future capable runner). See docs/CI-REFERENCE.md.
-    if: github.event_name == 'workflow_dispatch'
+    # The FULL F1-F22 suite. Reliably green on a real LXD host (local), but NOT
+    # yet trusted on a stock shared GitHub runner — the heavy / error-driving /
+    # dynamic-storage tests race Juju timing under load. So the NIGHTLY runs the
+    # reliable smoke tier (above), and the full suite runs (a) on demand via
+    # workflow_dispatch, and (b) on the WEEKLY cron as continue-on-error
+    # flake-data collection — the evidence base for promoting it to the nightly
+    # (P2-9b). See docs/CI-REFERENCE.md.
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '19 5 * * 0'
+    # Weekly leg is data-collection: never reddens the repo (the issue step
+    # below still records the failure loudly). Dispatch runs report normally.
+    continue-on-error: ${{ github.event_name == 'schedule' }}
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        # Single 4.0 entry now (locked D5: target 4.0+); structured as a matrix
-        # so adding 4.1 / 26.04 later is a one-line change.
-        juju-channel: ["4.0/stable"]
+        # 4.0/stable = released engine; 4.0/edge = engine-under-test, where
+        # regressions land first (the calibration value-add). Structured as a
+        # matrix so 4.1 / 26.04 later are one-line changes.
+        juju-channel: ["4.0/stable", "4.0/edge"]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -260,3 +295,13 @@ jobs:
           name: ${{ steps.report.outputs.name }}
           path: report.xml
           if-no-files-found: warn
+      # P2-9a: weekly full-suite failures feed the flake ledger via issues —
+      # continue-on-error above hides them from the badge, NOT from us.
+      - name: File issue on weekly full-suite failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "Weekly full suite (${{ matrix.juju-channel }}) failed — $(date -u +%F)" \
+            --body "Weekly flake-data full-suite run failed on \`${{ matrix.juju-channel }}\`. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} (report.xml artifact has the per-test record)"
