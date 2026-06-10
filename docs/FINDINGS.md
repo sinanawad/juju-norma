@@ -229,10 +229,19 @@ so an unsuppressed retry loops forever at ~uniter-backoff cadence — observed
 JUJU_CONTROLLER=lxd make integration`); anomaly window = leader's
 relation-joined during scale-up churn on the shared session model.
 
-**Status**: charm-side recovery shipped (recover-by-label + loop suppressor);
-**Next probes**: (1) run 3 with the fixed charm — expect anomaly 1 to still
-fire but self-repair via label (`secret-pointer-repaired` ledger entry) with NO
-cascade; (2) rebuild controller from 4.0 tip and re-run to test whether either
-anomaly is already fixed upstream ("real, since-fixed engine bug" vs "live bug;
-backport candidate"). Upstream filing is gated (PX-3) — this dossier is the
+**Status**: charm-side recovery validated live (run 3, fixed charm):
+**cascade eliminated** — 1 failed / 34 passed / 2 xfailed in 22:42 vs run 2's
+6 failed / 4 errors in 91:29; hook errors bounded + self-cleared
+(`secret-recreate-suppressed` ×10, suite continued normally). Anomaly 1 fired
+again (3/3 runs) and run 3 SHARPENED it: zero `secret-pointer-repaired` events
+— post-trigger the leader agent resolves its owned secret neither by id NOR by
+label, persistently, while `juju secrets` lists it alive controller-side ⇒
+wholesale unit-agent-side secret-resolution loss, not a stale id index.
+test_secrets still fails — correctly: it reports a real engine state.
+
+**Next probes**: (1) tip-built controller (4.0 branch ≥ `938afc5120`) — re-run
+to classify "live bug" vs "since-fixed; backport candidate" (the new
+`repair-error` ledger field will also say WHY repair fails: NotFound vs lease);
+(2) after classification, P2-11 disposition for the full tier (xfail citing
+FINDINGS#1 vs keep-red). Upstream filing is gated (PX-3) — this dossier is the
 ready-to-file artifact.
