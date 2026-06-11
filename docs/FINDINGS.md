@@ -154,3 +154,115 @@ environment limitations (need MAAS or a real cloud / non-nested LXD host), not
 charm defects. The most actionable engine/tooling items are **A1** (refresh vs
 deploy metadata binding — confusing errors) and **B4** (charmcraft not priming
 lxd-profile.yaml with the uv plugin).
+
+## F. Calibration anomaly dossiers (FINDINGS#N — citable IDs)
+
+Numbered, evidence-first dossiers for suspected ENGINE anomalies caught by the
+calibration suite (the P2-11 convention: xfail/skip reasons cite `FINDINGS#N`;
+each dossier stays "ready to file" upstream for when the external-integration
+gate opens).
+
+### FINDINGS#1 — app-owned secret becomes unresolvable after scale churn; recovery commit then error-loops update-status
+
+**Status: INVESTIGATING** (run-2 postmortem pending). First captured 2026-06-10,
+the first instrumented run after the P2-1 forensics landed (charm rev
+`e66d879`); previously visible only as the undiagnosable full-suite
+`test_secrets` failure ("has-content=false", ~10th test, after
+badbehavior/relations/scaling churn the shared session model).
+
+**Environment**: LXD localhost, controller agent **4.0.10.1**, client 4.0.12
+(source build), full F1-F22 suite in one session model.
+
+**Observed (run 1, 2026-06-10 05:54–07:25 UTC, model `norma-5122bd9b`)**:
+
+1. During `test_scale_up` (add-unit 1→2): new unit/1 provisions to
+   `active/idle` normally, then the **leader** `juju-norma/0` flips
+   `error: hook failed: "update-status"` (09:25:13+03:00) and **keeps failing
+   update-status every interval for the rest of the run** (a deterministic
+   retry loop, ≥7 recurrences in the status stream).
+2. All later waits cascade: scale_up/scale_down (Timeout), dynamic-storage
+   cycle, subordinate, refresh/upgrade — 6 failed / 4 errors vs the historical
+   single test_secrets failure. One removed machine lingered `life=dead`.
+3. The new forensic readout captured the secret state on the same leader:
+   `get-secret-info` → `error='SecretNotFoundError: '` (empty message) for
+   `secret-id=secret://1281c5f1-8539-4f59-89c2-718849ddd849/mkarsh538mlnhc5ghl4g`
+   — i.e. peer app-data still holds the URI, `secret-get --refresh` says the
+   secret does not exist. The ACTION (read-only) completes fine while the
+   HOOK (update-status) fails — the divergence is in the write/commit path.
+
+**CONFIRMED MECHANISM (run-2 kept-model postmortem, model `norma-426e8c20`,
+evidence archived in `findings/1/`)** — TWO engine anomalies, both proven:
+
+1. **In-hook `SecretNotFoundError` for an app-owned secret that EXISTS.** At
+   07:51:28Z, in the leader's `norma-peers-relation-joined` for the new unit
+   (scale-up 1→2), `model.get_secret(id=<pointer>)` raised SecretNotFoundError
+   while the pointer was still the ORIGINAL secret `evvn7qoo…` — which `juju
+   secrets` lists alive (sole revision, owner juju-norma) hours later. Ledger
+   proof: the first `secret-recreated` entry has `stale-id=…/evvn7qoo…`.
+   Leadership stable (`show-unit`: leader: true) — not a lease-flap artifact.
+
+2. **`CommitHookChanges` is NOT atomic: a failed hook's `relation-set`
+   persists.** The charm's self-heal buffered `secret-add` + pointer write;
+   commit failed server-side every time (`cannot apply changes: creating
+   secrets: secret with label "calibration-password" already exists` — itself
+   proving the secret existed and anomaly 1's NotFound was wrong), the hook
+   errored — yet each iteration's ledger `stale-id` equals the PREVIOUS failed
+   iteration's phantom `new-id` (12+ links: evvn7qoo→gd8a54fa→avtiaab6→
+   q151vifg→…), and `show-unit` confirms the final phantom in the Juju-side
+   app databag. Relation data from failed hooks persisted EVERY time,
+   violating the failed-hook-changes-nothing contract. This poisoned pointer
+   is the long-lived corruption behind the historical test_secrets artifact.
+
+No charm-side Python traceback exists in the entire run apart from the
+intentional bad-behavior one (H2 refuted). The old pre-P2-1 charm hid all of
+this as a silent `return` + undiagnosable `has-content=false`.
+
+**Charm-side consequence (fixed in-branch, p2-1b)**: a blind re-create with
+the same label can never commit while the real secret holds the label → the
+self-heal must RECOVER-BY-LABEL first (the commit rejection proves a label
+lookup would succeed), re-create only if the label is free, and suppress via a
+ledger loop-detector otherwise (anomaly 2 makes the phantom pointer durable,
+so an unsuppressed retry loops forever at ~uniter-backoff cadence — observed
+07:51→08:21+).
+
+**Repro**: 2/2 instrumented full-suite runs (`JUJU_CLI=/data/dev/juju/_bin/juju
+JUJU_CONTROLLER=lxd make integration`); anomaly window = leader's
+relation-joined during scale-up churn on the shared session model.
+
+**Status**: charm-side recovery validated live (run 3, fixed charm):
+**cascade eliminated** — 1 failed / 34 passed / 2 xfailed in 22:42 vs run 2's
+6 failed / 4 errors in 91:29; hook errors bounded + self-cleared
+(`secret-recreate-suppressed` ×10, suite continued normally). Anomaly 1 fired
+again (3/3 runs) and run 3 SHARPENED it: zero `secret-pointer-repaired` events
+— post-trigger the leader agent resolves its owned secret neither by id NOR by
+label, persistently, while `juju secrets` lists it alive controller-side ⇒
+wholesale unit-agent-side secret-resolution loss, not a stale id index.
+test_secrets still fails — correctly: it reports a real engine state.
+
+**TIP CLASSIFICATION (run 4, controller built from 4.0 @ `0c7e2b4e5b`,
+agent 4.0.12.1, 2026-06-10)** — the two anomalies SPLIT:
+
+- **Anomaly 2 (non-atomic CommitHookChanges): FIXED on tip.** All 17 recreate
+  attempts carry `stale-id` = the REAL secret (`ul4qg30…`) — the pointer never
+  went phantom across 17 failed commits (vs the 12-link phantom chain on
+  4.0.10.1). Rollback works. Reclassified: *since-fixed between 4.0.10.1 and
+  `0c7e2b4e5b`* — backport-audit question for released 4.0.x.
+- **Anomaly 1 (unit-agent resolution loss): LIVE on tip.** Same trigger
+  (leader's peer relation-joined, scale-up 1→2); by-id AND by-label both
+  `SecretNotFoundError` (empty message — NOT lease; `repair-error` field
+  proves it) for ≥78 minutes (fresh probe 10:59Z), while `juju secrets`
+  serves the secret throughout. Deterministic 4/4 across both controllers.
+  **This is the headline unfiled bug.**
+- Charm-side: detector v3 (suppress when a prior attempt exists for the SAME
+  stale pointer) bounds the loop in the rollback world too — run 4 looped 17×
+  because v2 keyed only on the persisted phantom.
+
+Evidence: `findings/1/run4-tip-{ledger,secrets,debug}.{json,log}`. The
+broken tip model `lxd-tip:norma-c9c68d3b` is KEPT LIVE for hands-on
+inspection (destroy with `juju destroy-model lxd-tip:norma-c9c68d3b
+--no-prompt --force --no-wait` when done; the `lxd-tip` controller can go the
+same way after).
+
+**Next**: P2-11 disposition for the full tier (xfail citing FINDINGS#1 vs
+keep-red) — user decision; upstream filing gated (PX-3), dossier
+ready-to-file.
