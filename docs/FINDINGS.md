@@ -191,7 +191,7 @@ badbehavior/relations/scaling churn the shared session model).
    HOOK (update-status) fails — the divergence is in the write/commit path.
 
 **CONFIRMED MECHANISM (run-2 kept-model postmortem, model `norma-426e8c20`,
-evidence archived in `.omc/findings/1/`)** — TWO engine anomalies, both proven:
+evidence archived in `findings/1/`)** — TWO engine anomalies, both proven:
 
 1. **In-hook `SecretNotFoundError` for an app-owned secret that EXISTS.** At
    07:51:28Z, in the leader's `norma-peers-relation-joined` for the new unit
@@ -257,7 +257,7 @@ agent 4.0.12.1, 2026-06-10)** — the two anomalies SPLIT:
   stale pointer) bounds the loop in the rollback world too — run 4 looped 17×
   because v2 keyed only on the persisted phantom.
 
-Evidence: `.omc/findings/1/run4-tip-{ledger,secrets,debug}.{json,log}`. The
+Evidence: `findings/1/run4-tip-{ledger,secrets,debug}.{json,log}`. The
 broken tip model `lxd-tip:norma-c9c68d3b` is KEPT LIVE for hands-on
 inspection (destroy with `juju destroy-model lxd-tip:norma-c9c68d3b
 --no-prompt --force --no-wait` when done; the `lxd-tip` controller can go the

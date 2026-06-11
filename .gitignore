@@ -15,6 +15,7 @@ dist/
 .coverage
 .pytest_cache/
 htmlcov/
+report.xml
 
 # Tooling
 .ruff_cache/
@@ -44,3 +45,7 @@ workload/Dockerfile
 *.token
 charmhub-token.txt
 charmhub-creds.txt
+
+# Relocated from .omc (bug evidence + roadmap drafts) — root, untracked
+/findings/
+/plans/
