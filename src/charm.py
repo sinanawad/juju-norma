@@ -19,6 +19,7 @@ import secrets
 
 import ops
 from charms.grafana_agent.v0.cos_agent import COSAgentProvider
+from ops import hookcmds
 
 import norma
 from norma_common import badbehavior
@@ -793,24 +794,42 @@ class NormaCharm(ops.CharmBase):
         return {"secret-id": secret_id or "unavailable", "has-secret": bool(secret_id)}
 
     def _collect_goal_state(self) -> dict:
-        # ops exposes no public goal-state API, so we reach the hook tool through
-        # the private backend. Fragile across ops versions — guarded broadly and
-        # degrades to "unavailable" rather than failing introspection. Revisit if
-        # ops adds a public goal-state accessor.
+        # Public ops goal-state API (ops.hookcmds.goal_state, present since the
+        # 3.x line). Returns a typed GoalState; we flatten it to the JSON-shaped
+        # {units, relations} the introspect report emits — stringifying the
+        # datetime `since` so the section stays json.dumps-able. Under
+        # ops.testing/Scenario there is no goal-state backend, so we degrade to
+        # "unavailable" rather than failing introspection.
         try:
-            raw = self.model._backend._run_tool("goal-state", "--format", "json")
-            return json.loads(raw)
+            gs = hookcmds.goal_state()
         except Exception:  # introspection must never crash
-            return {"status": "unavailable", "reason": "goal-state hook tool not accessible"}
+            return {"status": "unavailable", "reason": "goal-state not accessible"}
+
+        def _goal(g: hookcmds.Goal) -> dict:
+            return {"status": g.status, "since": g.since.isoformat()}
+
+        return {
+            "units": {name: _goal(g) for name, g in gs.units.items()},
+            "relations": {
+                endpoint: {who: _goal(g) for who, g in goals.items()}
+                for endpoint, goals in gs.relations.items()
+            },
+        }
 
     # ------------------------------------------------------------------ #
     #  Workload + relation-data helpers                                   #
     # ------------------------------------------------------------------ #
 
     def _ensure_workload_binary(self) -> None:
-        """Fetch the norma-bin file resource and lay it down on the host (F2)."""
-        if self.driver.is_ready():
-            return
+        """Fetch the norma-bin file resource and lay it down on the host (F2).
+
+        Always re-fetch and content-compare so a ``juju refresh`` /
+        ``attach-resource`` that ships NEW bytes is picked up on existing units —
+        the old ``is_ready()`` short-circuit returned before fetching, so a
+        running unit served a stale binary forever. ``resource-get``
+        fingerprint-matches, so an unchanged resource is a cheap no-op; the
+        driver only rewrites + we only restart when the bytes actually change.
+        """
         try:
             path = self.model.resources.fetch("norma-bin")
         except (ops.ModelError, NameError):
@@ -818,9 +837,25 @@ class NormaCharm(ops.CharmBase):
         if not path or not path.exists() or path.stat().st_size == 0:
             return
         try:
-            self.driver.install_binary(str(path))
+            changed = self.driver.install_binary(str(path))
         except WorkloadError:
             logger.exception("Failed to install workload binary")
+            return
+        if not changed:
+            return
+        self._log_event("workload-binary-updated")
+        # A binary swap with an otherwise-unchanged unit file won't trip apply()'s
+        # restart, so restart explicitly when the workload is already running
+        # (a fresh unit is not yet running — apply() starts it after this).
+        try:
+            running = self.driver.service_running()
+        except WorkloadError:
+            running = False
+        if running:
+            try:
+                self.driver.restart()
+            except WorkloadError:
+                logger.exception("Failed to restart workload after binary update")
 
     def _update_relation_data(self, *, broken_relation: ops.Relation | None = None) -> None:
         """Write peer + calibration relation data idempotently (F6; F7/F8 wiring)."""

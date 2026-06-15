@@ -23,6 +23,8 @@ from charm import NormaCharm
 def _make_ready(monkeypatch):
     """Short-circuit SystemdDriver so reconcile skips resource fetch + apply."""
     monkeypatch.setattr(workload_driver.SystemdDriver, "is_ready", lambda self: True)
+    # P2-4: _ensure_workload_binary always fetches norma-bin now; neutralise it.
+    monkeypatch.setattr(NormaCharm, "_ensure_workload_binary", lambda self: None)
     monkeypatch.setattr(workload_driver.SystemdDriver, "apply", lambda self, **kw: None)
     monkeypatch.setattr(workload_driver.SystemdDriver, "service_running", lambda self: True)
 

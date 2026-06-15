@@ -219,6 +219,26 @@ class TestInstallBinary:
         with pytest.raises(WorkloadError, match="failed to install binary"):
             _driver(tmp_path).install_binary(str(tmp_path / "does-not-exist"))
 
+    def test_noop_when_content_identical(self, tmp_path):
+        # P2-4: re-installing identical bytes is a no-op and reports unchanged,
+        # so a juju refresh shipping the same binary doesn't churn/restart.
+        source = tmp_path / "src-norma"
+        source.write_text("#!/bin/true\n")
+        driver = _driver(tmp_path)
+        assert driver.install_binary(str(source)) is True  # first lay-down → changed
+        assert driver.install_binary(str(source)) is False  # identical → no-op
+
+    def test_reinstalls_when_content_differs(self, tmp_path):
+        # P2-4: NEW bytes (attach-resource / refresh) are picked up and reported
+        # as changed — the bug this fix closes (stale binary served forever).
+        source = tmp_path / "src-norma"
+        source.write_text("v1\n")
+        driver = _driver(tmp_path)
+        assert driver.install_binary(str(source)) is True
+        source.write_text("v2-different\n")
+        assert driver.install_binary(str(source)) is True
+        assert (tmp_path / "norma").read_text() == "v2-different\n"
+
 
 class TestTeardown:
     def test_removes_unit_file_idempotently(self, tmp_path, monkeypatch):
