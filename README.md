@@ -9,9 +9,11 @@ regressed. It is the machine-substrate sibling of the Kubernetes charm
 [`juju-norma-k8s`](https://github.com/sinanawad/juju-norma-k8s).
 
 > **Status:** feature-complete calibration harness (F1–F22), continuously
-> verified on LXD. **Not** a production workload, and not yet published to
-> CharmHub. Some HTTP endpoints are intentionally unauthenticated for testing —
-> see [`SECURITY.md`](SECURITY.md) and [`docs/FINDINGS.md`](docs/FINDINGS.md) §0.
+> verified on LXD and **published to CharmHub `latest/edge`** (amd64, base
+> ubuntu@24.04) on every merge to `main`; not yet released to a stable channel.
+> **Not** a production workload. Some HTTP endpoints are intentionally
+> unauthenticated for testing — see [`SECURITY.md`](SECURITY.md) and
+> [`docs/FINDINGS.md`](docs/FINDINGS.md) §0.
 
 ## What is this?
 
