@@ -14,18 +14,18 @@ on:
         description: Source channel
         required: true
         type: choice
-        default: 4/candidate
+        default: latest/candidate
         options:
-          - 4/edge
-          - 4/candidate
+          - latest/edge
+          - latest/candidate
       to_channel:
         description: Target channel
         required: true
         type: choice
-        default: 4/stable
+        default: latest/stable
         options:
-          - 4/candidate
-          - 4/stable
+          - latest/candidate
+          - latest/stable
 
 permissions:
   contents: read
