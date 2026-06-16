@@ -26,6 +26,9 @@ def _make_ready(monkeypatch, *, running=True, failed=False):
     monkeypatch.setattr(workload_driver.SystemdDriver, "apply", lambda self, **kw: None)
     monkeypatch.setattr(workload_driver.SystemdDriver, "service_running", lambda self: running)
     monkeypatch.setattr(workload_driver.SystemdDriver, "service_failed", lambda self: failed)
+    # P2-4: _ensure_workload_binary now always fetches norma-bin (no is_ready
+    # short-circuit); these "ready" tests don't declare the resource, so neutralise it.
+    monkeypatch.setattr(NormaCharm, "_ensure_workload_binary", lambda self: None)
 
 
 class TestCharmInit:
@@ -137,6 +140,52 @@ class TestResourceLayDown:
         ctx = ops.testing.Context(NormaCharm)
         ctx.run(ctx.on.install(), ops.testing.State(resources={norma_bin}))
         assert installed == []
+
+    def test_binary_change_logs_event_and_restarts(self, tmp_path, monkeypatch):
+        # P2-4: a resource whose bytes differ (install_binary → changed=True) on a
+        # RUNNING unit triggers a restart + a workload-binary-updated ledger entry
+        # (the attach-resource / refresh calibration trap).
+        restarts: list[int] = []
+        monkeypatch.setattr(workload_driver.SystemdDriver, "install_binary", lambda self, s: True)
+        monkeypatch.setattr(workload_driver.SystemdDriver, "is_ready", lambda self: True)
+        monkeypatch.setattr(workload_driver.SystemdDriver, "apply", lambda self, **kw: None)
+        monkeypatch.setattr(workload_driver.SystemdDriver, "service_running", lambda self: True)
+        monkeypatch.setattr(
+            workload_driver.SystemdDriver, "restart", lambda self: restarts.append(1)
+        )
+        bin_resource = tmp_path / "norma"
+        bin_resource.write_text("#!/bin/true\nNEW\n")
+        ctx = ops.testing.Context(NormaCharm)
+        state = ops.testing.State(
+            resources={ops.testing.Resource(name="norma-bin", path=bin_resource)}
+        )
+        with ctx(ctx.on.config_changed(), state) as mgr:
+            mgr.run()
+            names = [e["event_name"] for e in mgr.charm._event_ledger]
+        assert restarts == [1]
+        assert "workload-binary-updated" in names
+
+    def test_no_restart_when_binary_unchanged(self, tmp_path, monkeypatch):
+        # P2-4: install_binary reports unchanged → no restart, no ledger churn.
+        restarts: list[int] = []
+        monkeypatch.setattr(workload_driver.SystemdDriver, "install_binary", lambda self, s: False)
+        monkeypatch.setattr(workload_driver.SystemdDriver, "is_ready", lambda self: True)
+        monkeypatch.setattr(workload_driver.SystemdDriver, "apply", lambda self, **kw: None)
+        monkeypatch.setattr(workload_driver.SystemdDriver, "service_running", lambda self: True)
+        monkeypatch.setattr(
+            workload_driver.SystemdDriver, "restart", lambda self: restarts.append(1)
+        )
+        bin_resource = tmp_path / "norma"
+        bin_resource.write_text("same\n")
+        ctx = ops.testing.Context(NormaCharm)
+        state = ops.testing.State(
+            resources={ops.testing.Resource(name="norma-bin", path=bin_resource)}
+        )
+        with ctx(ctx.on.config_changed(), state) as mgr:
+            mgr.run()
+            names = [e["event_name"] for e in mgr.charm._event_ledger]
+        assert restarts == []
+        assert "workload-binary-updated" not in names
 
 
 class TestEventLedger:

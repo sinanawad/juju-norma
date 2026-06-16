@@ -31,6 +31,8 @@ def _make_ready(monkeypatch, *, running=True):
     monkeypatch.setattr(workload_driver.SystemdDriver, "service_running", lambda self: running)
     # Not crash-looped unless a test says so (running=False → Maintenance, not Blocked).
     monkeypatch.setattr(workload_driver.SystemdDriver, "service_failed", lambda self: False)
+    # P2-4: _ensure_workload_binary always fetches norma-bin now; neutralise it.
+    monkeypatch.setattr(NormaCharm, "_ensure_workload_binary", lambda self: None)
 
 
 # ---------------------------------------------------------------------------- #

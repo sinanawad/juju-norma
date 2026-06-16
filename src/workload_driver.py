@@ -12,6 +12,7 @@ hypothetical. ~80-85% of the sibling's *logic* is reusable behind this seam, but
 the seam itself is new abstraction work.
 """
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -21,6 +22,15 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import norma
+
+
+def _sha256(path: str | Path) -> str:
+    """SHA-256 hex digest of a file (streamed; raises OSError if unreadable)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 class WorkloadError(Exception):
@@ -45,8 +55,8 @@ class WorkloadDriver(Protocol):
         """Whether the workload can be managed (binary delivered)."""
         ...
 
-    def install_binary(self, source: str) -> None:
-        """Lay the workload binary down on the host (idempotent)."""
+    def install_binary(self, source: str) -> bool:
+        """Lay the workload binary down if its bytes differ; return whether it changed."""
         ...
 
     def apply(self, *, port: int, version: str, env: dict[str, str]) -> None:
@@ -107,19 +117,29 @@ class SystemdDriver:
         """
         return Path(self.binary_path).exists()
 
-    def install_binary(self, source: str) -> None:
-        """Copy the fetched file resource to the host binary path, executable.
+    def install_binary(self, source: str) -> bool:
+        """Copy the fetched file resource to the host binary path if its bytes differ.
 
         This is F2 (workload via file resource): the charm fetches the
-        ``norma-bin`` resource with ``resource-get`` and hands us the path;
-        we lay it down at ``self.binary_path``. Idempotent — safe to re-run on
-        every reconcile and on ``juju refresh``/``attach-resource``.
+        ``norma-bin`` resource with ``resource-get`` and hands us the path; we
+        lay it down at ``self.binary_path``. Content-comparing (SHA-256) makes a
+        ``juju refresh`` / ``attach-resource`` that ships NEW bytes actually land
+        on the host, while an unchanged resource (the common refresh case, where
+        ``resource-get`` fingerprint-matches) copies nothing.
+
+        Returns ``True`` when the binary was (re)written, ``False`` when the
+        installed binary already had identical content — so the caller can
+        restart the service only on a real change.
         """
         try:
             dest = Path(self.binary_path)
+            new_digest = _sha256(source)
+            if dest.exists() and _sha256(dest) == new_digest:
+                return False
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, dest)
             dest.chmod(0o755)
+            return True
         except OSError as e:
             raise WorkloadError(f"failed to install binary to {self.binary_path}: {e}") from e
 

@@ -275,3 +275,25 @@ class TestNeverRaises:
         _, decoded = _run_introspect(ctx, ops.testing.State(), sections="goal-state")
         assert "goal-state" in decoded
         assert isinstance(decoded["goal-state"], dict)
+
+    def test_goal_state_flattened_from_public_api(self, monkeypatch):
+        # P2-5: ops.hookcmds.goal_state() returns a typed GoalState; the collector
+        # flattens it to the {units, relations} JSON shape and stringifies the
+        # datetime `since` so the section stays json.dumps-able.
+        import datetime
+
+        from ops import hookcmds
+
+        since = datetime.datetime(2026, 6, 15, 12, 0, tzinfo=datetime.timezone.utc)
+        gs = hookcmds.GoalState(
+            units={"juju-norma/0": hookcmds.Goal(status="active", since=since)},
+            relations={
+                "norma-peers": {"juju-norma": hookcmds.Goal(status="joining", since=since)}
+            },
+        )
+        monkeypatch.setattr(hookcmds, "goal_state", lambda: gs)
+        ctx = ops.testing.Context(NormaCharm)
+        _, decoded = _run_introspect(ctx, ops.testing.State(), sections="goal-state")
+        g = decoded["goal-state"]
+        assert g["units"]["juju-norma/0"] == {"status": "active", "since": since.isoformat()}
+        assert g["relations"]["norma-peers"]["juju-norma"]["status"] == "joining"
