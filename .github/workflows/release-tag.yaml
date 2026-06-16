@@ -4,12 +4,12 @@ name: Release (tag)
 #   1. Promote the revision currently on latest/edge -> latest/candidate. The
 #      promotion preserves the charm revision number and its attached norma-bin
 #      resource, so the exact bits validated on edge flow to candidate.
-#   2. Build the SUBORDINATE charm (the machine analogue of the k8s sibling's
-#      sudoer variant — a real second artifact, not an overlay) and the norma
-#      binary, for the GitHub Release.
-#   3. Download the principal charm from latest/candidate (byte-identical to what
-#      CharmHub serves), and cut a GitHub Release with the principal + subordinate
-#      .charm, the norma binary, and SHA256SUMS — all SLSA-attested.
+#   2. Pack the PRINCIPAL + SUBORDINATE charms and build the norma binary, all
+#      FROM THE TAGGED COMMIT (the subordinate is the machine analogue of the k8s
+#      sibling's sudoer variant — a real second artifact, not an overlay).
+#   3. Cut a GitHub Release with the principal + subordinate .charm (both packed
+#      from the tag in step 2 — coherent, no CharmHub round-trip), the norma
+#      binary, and SHA256SUMS — all SLSA-attested.
 #
 # Machine specifics vs the sibling: no ROCK promotion; the GH Release carries the
 # norma binary so offline consumers can `juju deploy ... --resource norma-bin=`.
@@ -54,7 +54,7 @@ jobs:
             --yes
 
   build-artifacts:
-    name: Build subordinate charm + norma binary
+    name: Pack principal + subordinate charms + norma binary
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -71,11 +71,16 @@ jobs:
         run: sudo snap install charmcraft --classic
       - name: Build norma binary (stamped with the tag)
         run: make build-workload VERSION=${GITHUB_REF_NAME}
+      - name: Fetch charm libs + pack principal charm
+        run: charmcraft fetch-libs && charmcraft pack -v
       - name: Pack subordinate charm
         run: cd subordinate && charmcraft pack -v
       - name: Stage artifacts
         run: |
           set -euo pipefail
+          # The principal packs at the repo root as juju-norma_amd64.charm (single
+          # amd64 platform); the subordinate packs under subordinate/.
+          test -f juju-norma_amd64.charm
           sub=$(ls subordinate/juju-norma-subordinate_*.charm | grep '_amd64' | head -1)
           mv "$sub" juju-norma-subordinate_amd64.charm
           mv norma norma-linux-amd64
@@ -84,6 +89,7 @@ jobs:
         with:
           name: release-artifacts
           path: |
+            juju-norma_amd64.charm
             juju-norma-subordinate_amd64.charm
             norma-linux-amd64
           if-no-files-found: error
@@ -98,29 +104,14 @@ jobs:
       id-token: write # OIDC for SLSA build provenance
       attestations: write # record the provenance attestation
     steps:
-      - name: Install charmcraft
-        run: sudo snap install charmcraft --classic
-      - name: Download principal .charm from latest/candidate
-        env:
-          CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
-        run: |
-          set -uo pipefail
-          # Retry transient CharmHub failures (mirrors publish-edge / promote step).
-          cc() {
-            local rc
-            for attempt in 1 2 3 4 5; do
-              charmcraft "$@" && return 0
-              rc=$?
-              echo "charmcraft $1 attempt $attempt failed (rc=$rc); retrying in 20s" >&2
-              sleep 20
-            done
-            echo "charmcraft $1 failed after 5 attempts" >&2
-            return 1
-          }
-          # The canonical artifact CharmHub serves on this channel — byte-identical
-          # to what `juju deploy --channel=latest/candidate` pulls.
-          cc download juju-norma --channel=latest/candidate || exit 1
-          mv "$(ls juju-norma_*.charm | head -1)" juju-norma_amd64.charm
+      # gh release create needs a git repo context (to resolve the repo + tag);
+      # this job builds nothing, it just bundles the artifacts into a Release.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # All three artifacts (principal + subordinate .charm, norma binary) were
+      # packed from the tag by build-artifacts — no CharmHub download needed.
       - name: Download built artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
