@@ -1,10 +1,11 @@
-name: Publish to latest/edge
+name: Publish to 4/edge
 
 # Continuous publish: after CI succeeds on main, build the norma binary, pack the
-# charm, and release a fresh revision to latest/edge with the `norma-bin` FILE
-# resource attached — so consumers (notably Juju CI, per docs/juju-ci-consumption.md
-# Mode B) always have the bleeding edge. Promotion to candidate/stable happens via
-# release-tag.yaml (git tags) or promote.yaml (manual).
+# charm, and release a fresh revision to 4/edge with the `norma-bin` FILE resource
+# attached — so consumers (notably Juju 4.x CI, per docs/juju-ci-consumption.md)
+# always have the bleeding edge. The `4` track scopes "newest norma" to Juju 4.x;
+# promotion to 4/candidate then 4/stable happens via release-tag.yaml (git tags)
+# or promote.yaml (manual). See docs/RELEASING.md.
 #
 # MACHINE-charm specifics vs the k8s sibling: there is no ROCK/OCI image and no
 # workflow_run off publish-rock. The workload is a FILE resource, so we cannot use
@@ -31,7 +32,7 @@ permissions:
 
 jobs:
   publish:
-    name: Publish charm + norma-bin resource to latest/edge
+    name: Publish charm + norma-bin resource to 4/edge
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # Only after a green CI run, or any manual dispatch.
@@ -49,7 +50,8 @@ jobs:
       - name: Setup LXD
         uses: canonical/setup-lxd@8c6a87bfb56aa48f3fb9b830baa18562d8bfd4ee # v1
       - name: Install charmcraft
-        # latest/stable (4.x lives here; there is no 4.x track to pin to).
+        # The charmcraft SNAP: 4.x lives on its latest/stable (charmcraft has no
+        # 4.x snap track) — unrelated to juju-norma's own `4` CHARM track.
         run: sudo snap install charmcraft --classic
       - name: Build workload binary (the norma-bin file resource)
         run: make build-workload VERSION=edge-$(git rev-parse --short HEAD)
@@ -57,7 +59,7 @@ jobs:
         run: charmcraft fetch-libs
       - name: Pack charm
         run: charmcraft pack -v
-      - name: Upload resource + charm, release to latest/edge
+      - name: Upload resource + charm, release to 4/edge
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
         run: |
@@ -88,6 +90,6 @@ jobs:
           res_json=$(cc upload-resource juju-norma norma-bin --filepath ./norma --format json) || exit 1
           res_rev=$(echo "$res_json" | jq -r '.revision')
           echo "norma-bin resource revision: $res_rev"
-          # Release the charm revision to edge with the resource bound to it.
-          cc release juju-norma --revision "$charm_rev" --channel latest/edge --resource norma-bin:"$res_rev" || exit 1
-          echo "released charm rev $charm_rev (norma-bin rev $res_rev) to latest/edge"
+          # Release the charm revision to 4/edge with the resource bound to it.
+          cc release juju-norma --revision "$charm_rev" --channel 4/edge --resource norma-bin:"$res_rev" || exit 1
+          echo "released charm rev $charm_rev (norma-bin rev $res_rev) to 4/edge"

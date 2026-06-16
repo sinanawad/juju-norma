@@ -14,18 +14,18 @@ on:
         description: Source channel
         required: true
         type: choice
-        default: latest/candidate
+        default: 4/candidate
         options:
-          - latest/edge
-          - latest/candidate
+          - 4/edge
+          - 4/candidate
       to_channel:
         description: Target channel
         required: true
         type: choice
-        default: latest/stable
+        default: 4/stable
         options:
-          - latest/candidate
-          - latest/stable
+          - 4/candidate
+          - 4/stable
 
 permissions:
   contents: read
@@ -42,12 +42,25 @@ jobs:
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
         run: |
+          set -uo pipefail
           # Refuse same-channel promotions — likely a misclick.
           if [[ "${{ inputs.from_channel }}" == "${{ inputs.to_channel }}" ]]; then
             echo "ERROR: from_channel and to_channel must differ"
             exit 1
           fi
-          charmcraft promote \
+          # Retry transient CharmHub failures (mirrors release-tag / publish-edge).
+          cc() {
+            local rc
+            for attempt in 1 2 3 4 5; do
+              charmcraft "$@" && return 0
+              rc=$?
+              echo "charmcraft $1 attempt $attempt failed (rc=$rc); retrying in 20s" >&2
+              sleep 20
+            done
+            echo "charmcraft $1 failed after 5 attempts" >&2
+            return 1
+          }
+          cc promote \
             --name=juju-norma \
             --from-channel=${{ inputs.from_channel }} \
             --to-channel=${{ inputs.to_channel }} \

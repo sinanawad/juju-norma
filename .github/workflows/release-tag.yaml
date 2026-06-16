@@ -1,18 +1,21 @@
 name: Release (tag)
 
 # On a git tag `v*`:
-#   1. Promote the revision currently on latest/edge -> latest/candidate. The
-#      promotion preserves the charm revision number and its attached norma-bin
-#      resource, so the exact bits validated on edge flow to candidate.
+#   1. Promote the revision currently on 4/edge -> 4/candidate. Promotion preserves
+#      the charm revision number and its attached norma-bin resource, so the exact
+#      bits validated on edge flow to candidate. DISCIPLINE: tag main's HEAD so the
+#      edge revision IS the tagged commit (there is no fancy rev-pinning — keep it
+#      simple, tag what edge already published). See docs/RELEASING.md.
 #   2. Build the SUBORDINATE charm (the machine analogue of the k8s sibling's
 #      sudoer variant — a real second artifact, not an overlay) and the norma
 #      binary, for the GitHub Release.
-#   3. Download the principal charm from latest/candidate (byte-identical to what
+#   3. Download the principal charm from 4/candidate (byte-identical to what
 #      CharmHub serves), and cut a GitHub Release with the principal + subordinate
 #      .charm, the norma binary, and SHA256SUMS — all SLSA-attested.
 #
-# Machine specifics vs the sibling: no ROCK promotion; the GH Release carries the
-# norma binary so offline consumers can `juju deploy ... --resource norma-bin=`.
+# Stable (4/stable) is a separate MANUAL gate via promote.yaml after vetting
+# candidate. Machine specifics vs the sibling: no ROCK promotion; the GH Release
+# carries the norma binary so offline consumers can `juju deploy ... --resource norma-bin=`.
 
 on:
   push:
@@ -23,20 +26,34 @@ permissions:
 
 jobs:
   promote-to-candidate:
-    name: Promote latest/edge -> latest/candidate
+    name: Promote 4/edge -> 4/candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Install charmcraft
         run: sudo snap install charmcraft --classic
-      - name: charmcraft promote edge -> candidate
+      - name: charmcraft promote 4/edge -> 4/candidate
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
         run: |
-          charmcraft promote \
+          set -uo pipefail
+          # Retry transient CharmHub failures (connection drops mid-call) so an
+          # unattended tag release doesn't abort on a blip (mirrors publish-edge).
+          cc() {
+            local rc
+            for attempt in 1 2 3 4 5; do
+              charmcraft "$@" && return 0
+              rc=$?
+              echo "charmcraft $1 attempt $attempt failed (rc=$rc); retrying in 20s" >&2
+              sleep 20
+            done
+            echo "charmcraft $1 failed after 5 attempts" >&2
+            return 1
+          }
+          cc promote \
             --name=juju-norma \
-            --from-channel=latest/edge \
-            --to-channel=latest/candidate \
+            --from-channel=4/edge \
+            --to-channel=4/candidate \
             --yes
 
   build-artifacts:
@@ -86,14 +103,26 @@ jobs:
     steps:
       - name: Install charmcraft
         run: sudo snap install charmcraft --classic
-      - name: Download principal .charm from latest/candidate
+      - name: Download principal .charm from 4/candidate
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # Retry transient CharmHub failures (mirrors publish-edge / promote step).
+          cc() {
+            local rc
+            for attempt in 1 2 3 4 5; do
+              charmcraft "$@" && return 0
+              rc=$?
+              echo "charmcraft $1 attempt $attempt failed (rc=$rc); retrying in 20s" >&2
+              sleep 20
+            done
+            echo "charmcraft $1 failed after 5 attempts" >&2
+            return 1
+          }
           # The canonical artifact CharmHub serves on this channel — byte-identical
-          # to what `juju deploy --channel=latest/candidate` pulls.
-          charmcraft download juju-norma --channel=latest/candidate
+          # to what `juju deploy --channel=4/candidate` pulls.
+          cc download juju-norma --channel=4/candidate || exit 1
           mv "$(ls juju-norma_*.charm | head -1)" juju-norma_amd64.charm
       - name: Download built artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
