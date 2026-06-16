@@ -11,8 +11,8 @@ Juju-4.x line.
 
 | Channel | Who writes it | When |
 |---|---|---|
-| `4/edge` | `publish-edge.yaml` (automatic) | every merge to `main` (after CI is green) |
-| `4/candidate` | `release-tag.yaml` (automatic) | on pushing a `v*` git tag — promotes the current `4/edge` |
+| `4/edge` | `publish-edge.yaml` (automatic, on merge) | every merge to `main` (after CI is green) |
+| `4/candidate` | `release-tag.yaml` (automatic, on `v*` tag) | on pushing a `v*` git tag — promotes the current `4/edge` |
 | `4/stable` | `promote.yaml` (manual) | after a human vets `4/candidate` |
 
 **Consumers (Juju 4.x CI) follow the channel — newest norma compatible with Juju 4:**
