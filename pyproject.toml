@@ -43,6 +43,11 @@ show_missing = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "lib"]
+# An unexpectedly-passing xfail fails the suite by default: an engine-regression
+# trap (e.g. an `xfail` marking a known-broken Juju behaviour) flips LOUDLY the
+# moment Juju fixes it, instead of silently passing. The two existing markers are
+# environment-conditional and opt out with explicit `strict=False`.
+xfail_strict = true
 markers = [
     "smoke: container-only integration tests runnable per-PR on a stock LXD runner",
     "mutates: integration test may intentionally leave the unit non-active (skips the no-cascade guard)",

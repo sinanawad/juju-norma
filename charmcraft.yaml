@@ -14,7 +14,9 @@ description: |
 base: ubuntu@24.04
 platforms:
   amd64:
-  arm64:
+  # arm64 intentionally omitted: the publish/CI path builds + smoke-tests amd64
+  # only. Re-add when there is a real arm64 build + live smoke leg (honesty rule:
+  # declare an arch only when its calibration leg actually runs).
 
 # Machine charm: declare the minimum Juju version and MUST NOT assume k8s-api.
 assumes:
