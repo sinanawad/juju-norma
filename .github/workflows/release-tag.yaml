@@ -33,7 +33,21 @@ jobs:
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
         run: |
-          charmcraft promote \
+          set -uo pipefail
+          # Retry transient CharmHub failures (connection drops mid-call) so an
+          # unattended tag release doesn't abort on a blip (mirrors publish-edge).
+          cc() {
+            local rc
+            for attempt in 1 2 3 4 5; do
+              charmcraft "$@" && return 0
+              rc=$?
+              echo "charmcraft $1 attempt $attempt failed (rc=$rc); retrying in 20s" >&2
+              sleep 20
+            done
+            echo "charmcraft $1 failed after 5 attempts" >&2
+            return 1
+          }
+          cc promote \
             --name=juju-norma \
             --from-channel=latest/edge \
             --to-channel=latest/candidate \
@@ -90,10 +104,22 @@ jobs:
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # Retry transient CharmHub failures (mirrors publish-edge / promote step).
+          cc() {
+            local rc
+            for attempt in 1 2 3 4 5; do
+              charmcraft "$@" && return 0
+              rc=$?
+              echo "charmcraft $1 attempt $attempt failed (rc=$rc); retrying in 20s" >&2
+              sleep 20
+            done
+            echo "charmcraft $1 failed after 5 attempts" >&2
+            return 1
+          }
           # The canonical artifact CharmHub serves on this channel — byte-identical
           # to what `juju deploy --channel=latest/candidate` pulls.
-          charmcraft download juju-norma --channel=latest/candidate
+          cc download juju-norma --channel=latest/candidate || exit 1
           mv "$(ls juju-norma_*.charm | head -1)" juju-norma_amd64.charm
       - name: Download built artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
