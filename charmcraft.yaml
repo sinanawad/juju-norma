@@ -31,9 +31,13 @@ parts:
     override-build: |
       craftctl default
       git describe --always > $CRAFT_PART_INSTALL/version
-      # charmcraft 4.x + uv plugin does not auto-prime lxd-profile.yaml (F15);
-      # copy it into the charm root explicitly so Juju applies it (machine-only).
+      # charmcraft 4.x + uv plugin + this custom override-build does NOT auto-prime
+      # the recognised charm-root files lxd-profile.yaml OR icon.svg (FINDINGS B4),
+      # so copy both into the charm root explicitly: Juju applies the lxd-profile
+      # (machine-only), and CharmHub extracts icon.svg to render the store logo
+      # (without it, the listing shows no icon even after a stable release).
       cp $CRAFT_PART_SRC/lxd-profile.yaml $CRAFT_PART_INSTALL/lxd-profile.yaml
+      cp $CRAFT_PART_SRC/icon.svg $CRAFT_PART_INSTALL/icon.svg
 
 # Workload delivery (D2): the compiled Go binary is attached as a file
 # resource and laid down on the host by the install hook via resource-get.
