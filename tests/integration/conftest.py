@@ -222,6 +222,43 @@ def juju(environment_ready, charm_path, workload_bin):
             )
 
 
+@pytest.fixture
+def isolated_juju(environment_ready, charm_path, workload_bin):
+    """A jubilant.Juju on a FRESH throwaway model, for tests that deploy AND remove
+    their own norma apps (P3 constraints / leadership).
+
+    Isolation is at the MODEL level, not just a separate app, on purpose: the norma
+    charm owns an application secret, and ``remove-application`` of a secret-owner
+    triggers the model-wide secret VALUE-deletion engine bug (FINDINGS#1) — which
+    would wipe the SHARED session model's secret and break downstream suites
+    (test_secrets). Removing the leader unit likewise churns topology that suites
+    assuming ``juju-norma/0`` depend on. A separate model contains both blast radii;
+    the model is force-destroyed afterwards so a wedged unit never strands cleanup.
+    """
+    cli = _env("JUJU_CLI") or "juju"
+    cloud = _env("JUJU_CLOUD")
+    no_model = jubilant.Juju(cli_binary=cli)
+    model_name = f"norma-iso-{uuid.uuid4().hex[:8]}"
+    add_args = ["add-model", model_name]
+    if cloud:
+        add_args.append(cloud)
+    no_model.cli(*add_args, include_model=False)
+    j = jubilant.Juju(model=model_name, cli_binary=cli)
+    try:
+        yield j
+    finally:
+        if _env("KEEP_MODEL") != "1":
+            no_model.cli(
+                "destroy-model",
+                model_name,
+                "--no-prompt",
+                "--force",
+                "--no-wait",
+                "--destroy-storage",
+                include_model=False,
+            )
+
+
 @pytest.fixture(autouse=True)
 def _no_cascade(juju, request):
     """Fail-fast + self-heal so one wedged test does not cascade.
