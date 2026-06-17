@@ -68,8 +68,13 @@ class TestConstraintsHonored:
     in ContainerSpec.ApplyConstraints (container.go:53-98)."""
 
     def test_deploy_constraints_stored_and_applied(
-        self, juju: jubilant.Juju, charm_path, workload_bin
+        self, isolated_juju: jubilant.Juju, charm_path, workload_bin
     ):
+        # Runs in a dedicated throwaway model: this app owns an app-secret, and
+        # removing it would trip the model-wide secret value-deletion bug
+        # (FINDINGS#1) on the shared session model. The isolated_juju fixture
+        # force-destroys the model afterwards — no in-test cleanup needed.
+        juju = isolated_juju
         # cpu-power is in the same deploy on purpose: LXD's validator WARNS + drops
         # it (it is one of the 5 unsupported: cpu-power, tags, container,
         # allocate-public-ip, image-id), so the deploy still SUCCEEDS and `juju
@@ -86,49 +91,33 @@ class TestConstraintsHonored:
             constraints,
             include_model=True,
         )
-        try:
-            juju.wait(
-                lambda s: (
-                    CSTR_APP in s.apps
-                    and len(s.apps[CSTR_APP].units) >= 1
-                    and jubilant.all_active(s)
-                ),
-                timeout=900,
-            )
+        juju.wait(
+            lambda s: (
+                CSTR_APP in s.apps and len(s.apps[CSTR_APP].units) >= 1 and jubilant.all_active(s)
+            ),
+            timeout=900,
+        )
 
-            # STORED: the model echoes the constraints back on the application.
-            stored = juju.cli("constraints", CSTR_APP, include_model=True)
-            assert f"cores={CORES}" in stored, f"cores not stored: {stored!r}"
-            assert "mem=512" in stored, f"mem not stored: {stored!r}"
-            assert "arch=amd64" in stored, f"arch not stored: {stored!r}"
+        # STORED: the model echoes the constraints back on the application.
+        stored = juju.cli("constraints", CSTR_APP, include_model=True)
+        assert f"cores={CORES}" in stored, f"cores not stored: {stored!r}"
+        assert "mem=512" in stored, f"mem not stored: {stored!r}"
+        assert "arch=amd64" in stored, f"arch not stored: {stored!r}"
 
-            # APPLIED: the provisioned machine's hardware reflects them. mem in
-            # hardware-characteristics is reported in MB as a bare number or
-            # with an 'M' suffix depending on version — compare numerically with
-            # a tolerance (the provider may round up to a flavour/page boundary).
-            unit = f"{CSTR_APP}/0"
-            hw = _parse_hw(_machine_hardware_for(juju, CSTR_APP, unit))
-            assert "cores" in hw, f"no cores in hardware: {hw}"
-            assert int(hw["cores"]) >= CORES, f"cores not applied: {hw}"
-            mem_val = int(hw.get("mem", "0").rstrip("M") or 0)
-            assert mem_val >= MEM_MB, f"mem not applied (got {mem_val}M, want >= {MEM_MB}M): {hw}"
-            assert hw.get("arch") == "amd64", f"arch not applied: {hw}"
-            # cpu-power is UNSUPPORTED on LXD: warned + dropped, never applied to
-            # the machine (contrast cores, which IS limits.cpu). Stored on the app
-            # but absent from hardware-characteristics.
-            assert "cpu-power" not in hw, f"cpu-power unexpectedly applied on LXD: {hw}"
-        finally:
-            # Force-remove so a wedged/oversized unit can never strand cleanup or
-            # pollute later suites on the shared session model.
-            juju.cli(
-                "remove-application",
-                CSTR_APP,
-                "--no-prompt",
-                "--force",
-                "--destroy-storage",
-                include_model=True,
-            )
-            juju.wait(lambda s: CSTR_APP not in s.apps, timeout=300)
+        # APPLIED: the provisioned machine's hardware reflects them. mem in
+        # hardware-characteristics is reported in MB as a bare number or with an
+        # 'M' suffix depending on version — compare numerically with a tolerance
+        # (the provider may round up to a flavour/page boundary).
+        hw = _parse_hw(_machine_hardware_for(juju, CSTR_APP, f"{CSTR_APP}/0"))
+        assert "cores" in hw, f"no cores in hardware: {hw}"
+        assert int(hw["cores"]) >= CORES, f"cores not applied: {hw}"
+        mem_val = int(hw.get("mem", "0").rstrip("M") or 0)
+        assert mem_val >= MEM_MB, f"mem not applied (got {mem_val}M, want >= {MEM_MB}M): {hw}"
+        assert hw.get("arch") == "amd64", f"arch not applied: {hw}"
+        # cpu-power is UNSUPPORTED on LXD: warned + dropped, never applied to the
+        # machine (contrast cores, which IS limits.cpu). Stored on the app but
+        # absent from hardware-characteristics.
+        assert "cpu-power" not in hw, f"cpu-power unexpectedly applied on LXD: {hw}"
 
 
 @pytest.mark.xfail(
@@ -142,7 +131,8 @@ class TestConstraintsHonored:
 )
 @pytest.mark.mutates
 class TestRootDiskConstraint:
-    def test_root_disk_applied(self, juju: jubilant.Juju, charm_path, workload_bin):
+    def test_root_disk_applied(self, isolated_juju: jubilant.Juju, charm_path, workload_bin):
+        juju = isolated_juju  # dedicated throwaway model (see TestConstraintsHonored)
         app = "norma-rootdisk"
         juju.cli(
             "deploy",
@@ -154,26 +144,19 @@ class TestRootDiskConstraint:
             "root-disk=8G",
             include_model=True,
         )
-        try:
-            juju.wait(
-                lambda s: app in s.apps and len(s.apps[app].units) >= 1 and jubilant.all_active(s),
-                timeout=900,
-            )
-            hw = _parse_hw(_machine_hardware_for(juju, app, f"{app}/0"))
-            # XFAIL target: machine hardware reflects an >= 8G root disk. On a
-            # pool-less localhost LXD the deploy errors before this; where a pool
-            # exists it xpasses (strict=False tolerates both).
-            assert "root-disk" in hw, f"no root-disk in hardware: {hw}"
-        finally:
-            juju.cli(
-                "remove-application",
-                app,
-                "--no-prompt",
-                "--force",
-                "--destroy-storage",
-                include_model=True,
-            )
-            juju.wait(lambda s: app not in s.apps, timeout=300)
+        # Bounded wait: where a 'default' pool exists this provisions and xpasses;
+        # where it doesn't, the machine never goes active, so cap the wait (don't
+        # burn the full provision timeout on the expected-fail path) → TimeoutError
+        # → xfail (strict=False).
+        juju.wait(
+            lambda s: app in s.apps and len(s.apps[app].units) >= 1 and jubilant.all_active(s),
+            timeout=420,
+        )
+        hw = _parse_hw(_machine_hardware_for(juju, app, f"{app}/0"))
+        # XFAIL target: machine hardware reflects an >= 8G root disk. On a
+        # pool-less localhost LXD the deploy errors before this; where a pool
+        # exists it xpasses (strict=False tolerates both).
+        assert "root-disk" in hw, f"no root-disk in hardware: {hw}"
 
 
 # NOTE: a "cloud-only constraint" xfail trap was intentionally dropped. The

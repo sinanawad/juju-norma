@@ -1,109 +1,104 @@
 """F6 leader-removal re-election (machine-distinct) (jubilant, LXD).
 
 Roadmap P3-2. Removing a unit BY NAME is IAAS/machine-only — K8s rejects it
-("k8s models do not support removing named units; use --num-units"), so removing
-the *leader* by name and observing a fresh leader election among the survivors is
-a behaviour the k8s sibling structurally cannot calibrate. Leadership is
-lease-based, so the new leader appears only after the old lease is revoked/expires
-— assertions poll with a generous deadline rather than expecting it instantly.
+("k8s models do not support removing named units; use --num-units",
+removeunit.go:173-178), so removing the *leader* by name and observing a fresh
+election among the survivors is a behaviour the k8s sibling structurally cannot
+calibrate. Leadership is lease-based (deployer LeadershipGuarantee=30s → 60s
+lease, reaped 1-5s), so re-election rides lease EXPIRY, not graceful handover —
+poll ~60-90s for a new leader, not instantly.
 
-Mutates the unit count; marked ``mutates`` and returns to a single unit so later
-suites run against a clean topology. Distinct from test_scaling, which only ever
-removes the HIGHEST-ordinal (non-leader) unit; here we remove unit/0 (the leader).
+Runs in a DEDICATED throwaway model (``isolated_juju``): removing the leader
+churns topology, and tearing the app down would trip the model-wide secret
+value-deletion bug (FINDINGS#1) — both would corrupt the shared session model.
+The fixture force-destroys the model afterwards, so no in-test cleanup is needed.
+Full-suite only (no smoke marker — provisions real machines).
 """
 
-import json
 import time
 
 import jubilant
 import pytest
 
-from .conftest import APP
+from .conftest import RESOURCE_NAME
 
-
-def _status(juju: jubilant.Juju) -> dict:
-    return json.loads(juju.cli("status", "--format", "json", include_model=True))
+LEAD_APP = "norma-lead"
 
 
 def _units(juju: jubilant.Juju) -> dict:
-    return _status(juju)["applications"][APP]["units"]
+    s = juju.status()
+    return s.apps[LEAD_APP].units if LEAD_APP in s.apps else {}
 
 
 def _leader_name(juju: jubilant.Juju) -> str | None:
-    """The unit juju currently reports as leader, or None during a gap."""
+    """The unit jubilant reports as leader, or None during a lease gap."""
     for name, u in _units(juju).items():
-        if u.get("leader"):
+        if getattr(u, "leader", False):
             return name
+    return None
+
+
+def _poll(predicate, timeout: float, interval: float = 10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        val = predicate()
+        if val:
+            return val
+        time.sleep(interval)
     return None
 
 
 @pytest.mark.mutates
 class TestLeaderReelection:
-    def test_remove_leader_triggers_reelection(self, juju: jubilant.Juju):
-        # 1) Ensure two units so a survivor exists to be elected.
-        if len(_units(juju)) < 2:
-            juju.cli("add-unit", APP, "-n", "1", include_model=True)
+    def test_remove_leader_triggers_reelection(
+        self, isolated_juju: jubilant.Juju, charm_path, workload_bin
+    ):
+        juju = isolated_juju
+        juju.cli(
+            "deploy",
+            str(charm_path),
+            LEAD_APP,
+            "--resource",
+            f"{RESOURCE_NAME}={workload_bin}",
+            "-n",
+            "2",
+            include_model=True,
+        )
         juju.wait(
-            lambda s: len(s.apps[APP].units) == 2 and jubilant.all_active(s),
+            lambda s: (
+                LEAD_APP in s.apps and len(s.apps[LEAD_APP].units) == 2 and jubilant.all_active(s)
+            ),
             timeout=900,
         )
 
-        # Leadership lease can lag units going active — poll for the initial leader.
-        deadline = time.monotonic() + 180
-        leader = None
-        while time.monotonic() < deadline:
-            leader = _leader_name(juju)
-            if leader:
-                break
-            time.sleep(5)
-        assert leader, "no leader elected on the 2-unit app"
+        # Initial leader (lease can lag units going active).
+        leader = _poll(lambda: _leader_name(juju), timeout=180, interval=5)
+        assert leader, f"no leader elected on the 2-unit {LEAD_APP}"
 
-        # 2) Remove the LEADER by name — machine-only (K8s rejects named removal).
+        # Remove the LEADER by name — machine-only (K8s rejects named removal).
+        # This step also calibrates "named-unit removal is accepted on machine"
+        # (the IAAS complement to the K8s rejection).
         juju.cli("remove-unit", leader, "--no-prompt", include_model=True)
 
-        # 3) The removed unit departs and a DIFFERENT survivor takes leadership
-        #    once the old lease is gone. Poll generously for both conditions.
-        deadline = time.monotonic() + 300
-        new_leader = None
-        while time.monotonic() < deadline:
+        # A DIFFERENT survivor takes leadership once the old lease expires.
+        def _reelected():
             units = _units(juju)
-            if leader not in units:  # old leader fully gone
-                new_leader = next((n for n, u in units.items() if u.get("leader")), None)
-                if new_leader:
-                    break
-            time.sleep(10)
+            if leader in units:  # old leader not yet gone
+                return None
+            return next((n for n, u in units.items() if getattr(u, "leader", False)), None)
 
+        new_leader = _poll(_reelected, timeout=300, interval=10)
         assert leader not in _units(juju), f"removed leader {leader} still present"
         assert new_leader, "no new leader elected after leader removal"
         assert new_leader != leader, f"leader did not change (still {leader})"
 
-        # 4) Cluster reconverges to the single survivor, active/idle.
+        # Reconverges to the single survivor, active/idle.
         juju.wait(
-            lambda s: len(s.apps[APP].units) == 1 and jubilant.all_active(s),
+            lambda s: len(s.apps[LEAD_APP].units) == 1 and jubilant.all_active(s),
             timeout=300,
         )
 
-        # 5) Leader handoff is functional: the NEW leader manages the app-owned
-        #    secret (machine-distinct — the secret's owner survived the old
-        #    leader's removal). get-secret-info runs leader-only.
-        info = juju.run(f"{APP}/leader", "get-secret-info").results
+        # Leader handoff is functional: the NEW leader manages the app-owned secret
+        # (it survived the old leader's removal). get-secret-info is leader-only.
+        info = juju.run(f"{LEAD_APP}/leader", "get-secret-info").results
         assert info.get("secret-id"), f"new leader cannot resolve the app secret: {info}"
-
-    def test_named_unit_removal_is_accepted(self, juju: jubilant.Juju):
-        """The IAAS complement to the K8s 'named removal rejected' behaviour.
-
-        On machine models removing a unit by name is accepted (it is the very
-        mechanism exercised above); this records the positive case explicitly so
-        the machine/K8s divergence is a documented, asserted calibration point.
-        """
-        # The session app is single-unit here; add then remove by name and assert
-        # the named-removal path is honoured (no 'use --num-units' rejection).
-        juju.cli("add-unit", APP, "-n", "1", include_model=True)
-        juju.wait(lambda s: len(s.apps[APP].units) == 2 and jubilant.all_active(s), timeout=900)
-        victim = max(_units(juju), key=lambda n: int(n.split("/")[1]))
-        juju.cli("remove-unit", victim, "--no-prompt", include_model=True)
-        juju.wait(
-            lambda s: len(s.apps[APP].units) == 1 and jubilant.all_active(s),
-            timeout=300,
-        )
-        assert victim not in _units(juju)
