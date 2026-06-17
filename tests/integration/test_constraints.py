@@ -2,12 +2,19 @@
 
 Machine-distinct calibration (roadmap P3-1). Constraints the LXD provider honors
 are asserted both STORED (``juju constraints``) and APPLIED (machine
-hardware-characteristics). The LXD-honored set is settled (PLAN A4 / SYNTHESIS M1
-and live FINDINGS F13): ``arch, cores, mem, root-disk, root-disk-source,
-virt-type, zones``. Cloud-only constraints (``cpu-power, instance-type, tags,
-image-id, spaces, …``), lxd-profile *application*, and nested ``--to lxd:N``
-placement are LXD limitations — covered by ``xfail`` (strict=False) so a future
-MAAS / real-cloud / non-nested-host run flips them loudly (FINDINGS A.3, 3c).
+hardware-characteristics). Code-verified vs 4.0 (internal/provider/lxd/
+environ_policy.go + internal/container/lxd/container.go): LXD APPLIES
+``arch, cores, mem, virt-type, instance-type`` (and root-disk/root-disk-source
+when a matching storage pool exists); it marks exactly five UNSUPPORTED —
+``cpu-power, tags, container, allocate-public-ip, image-id`` — which it warns +
+drops (stored on the app, never applied). ``instance-role``/``zones`` pass the
+validator but are no-ops on standalone LXD.
+
+What's calibrated here: the honored set (arch/cores/mem applied) + the
+unsupported-drop (cpu-power stored-not-applied) deterministically in one app;
+and two LXD-limitation traps as ``xfail`` (strict=False, so a MAAS / real-cloud /
+non-nested-host run flips them loudly) — root-disk's storage-pool dependence
+(FINDINGS 3c) and lxd-profile *application* (FINDINGS A.3).
 
 Cost note: the honored-set test deploys a dedicated short-lived app (one machine
 provision) and force-removes it, so it never pollutes the shared session model.
@@ -55,12 +62,20 @@ def _parse_hw(hardware: str) -> dict[str, str]:
 
 @pytest.mark.mutates
 class TestConstraintsHonored:
-    """F13: LXD honors arch/cores/mem at deploy (PLAN A4; live FINDINGS F13)."""
+    """F13: LXD honors arch/cores/mem at deploy; drops cpu-power (warned, stored
+    but not applied). Code-verified vs 4.0: validator marks cpu-power unsupported
+    (environ_policy.go:28-34); arch/cores/mem/virt-type/instance-type are applied
+    in ContainerSpec.ApplyConstraints (container.go:53-98)."""
 
     def test_deploy_constraints_stored_and_applied(
         self, juju: jubilant.Juju, charm_path, workload_bin
     ):
-        constraints = f"arch=amd64 cores={CORES} mem={MEM_MB}M"
+        # cpu-power is in the same deploy on purpose: LXD's validator WARNS + drops
+        # it (it is one of the 5 unsupported: cpu-power, tags, container,
+        # allocate-public-ip, image-id), so the deploy still SUCCEEDS and `juju
+        # constraints` still STORES it, but it never reaches the machine hardware.
+        # Calibrates "honored-applied" and "unsupported-stored-not-applied" in one app.
+        constraints = f"arch=amd64 cores={CORES} mem={MEM_MB}M cpu-power=100"
         juju.cli(
             "deploy",
             str(charm_path),
@@ -98,6 +113,10 @@ class TestConstraintsHonored:
             mem_val = int(hw.get("mem", "0").rstrip("M") or 0)
             assert mem_val >= MEM_MB, f"mem not applied (got {mem_val}M, want >= {MEM_MB}M): {hw}"
             assert hw.get("arch") == "amd64", f"arch not applied: {hw}"
+            # cpu-power is UNSUPPORTED on LXD: warned + dropped, never applied to
+            # the machine (contrast cores, which IS limits.cpu). Stored on the app
+            # but absent from hardware-characteristics.
+            assert "cpu-power" not in hw, f"cpu-power unexpectedly applied on LXD: {hw}"
         finally:
             # Force-remove so a wedged/oversized unit can never strand cleanup or
             # pollute later suites on the shared session model.
@@ -113,10 +132,12 @@ class TestConstraintsHonored:
 
 
 @pytest.mark.xfail(
-    reason="root-disk on localhost LXD is storage-pool-dependent: provisions when a "
-    "default root pool exists, else 'Storage pool not found' (FINDINGS 3c). Stored "
-    "either way; APPLIED is environment-dependent, so assert-applied is flaky. A "
-    "real cloud / configured-pool run flips this.",
+    reason="root-disk on localhost LXD is storage-pool-dependent: ApplyConstraints "
+    "pins a root device to a pool whose name defaults to the literal 'default' "
+    "(container.go:69-72) and Juju does not create/validate it, so LXD rejects at "
+    "create-time ('Storage pool not found') unless a pool named 'default' exists "
+    "(FINDINGS 3c). Stored either way; APPLIED is environment-dependent → flaky. A "
+    "configured-pool / real-cloud run flips this.",
     strict=False,
 )
 @pytest.mark.mutates
@@ -155,47 +176,13 @@ class TestRootDiskConstraint:
             juju.wait(lambda s: app not in s.apps, timeout=300)
 
 
-@pytest.mark.xfail(
-    reason="Cloud-only constraint: instance-type is accepted + stored on LXD but "
-    "applied to NO machine (real-cloud-only; PLAN A4 ROADMAP set). A MAAS/EC2 run "
-    "with a valid instance-type flips this.",
-    strict=False,
-)
-@pytest.mark.mutates
-class TestCloudOnlyConstraint:
-    def test_instance_type_applied(self, juju: jubilant.Juju, charm_path, workload_bin):
-        app = "norma-itype"
-        # A plausibly-cloud instance-type; LXD ignores it (warns) — the machine
-        # provisions without it, so the 'applied' assert below fails on LXD.
-        juju.cli(
-            "deploy",
-            str(charm_path),
-            app,
-            "--resource",
-            f"{RESOURCE_NAME}={workload_bin}",
-            "--constraints",
-            "instance-type=m1.small",
-            include_model=True,
-        )
-        try:
-            juju.wait(
-                lambda s: app in s.apps and len(s.apps[app].units) >= 1 and jubilant.all_active(s),
-                timeout=900,
-            )
-            hw = _parse_hw(_machine_hardware_for(juju, app, f"{app}/0"))
-            # XFAIL target: hardware carries the instance-type. LXD never applies
-            # it, so this fails on LXD and xpasses on a cloud that honors it.
-            assert "instance-type" in hw, f"instance-type not applied: {hw}"
-        finally:
-            juju.cli(
-                "remove-application",
-                app,
-                "--no-prompt",
-                "--force",
-                "--destroy-storage",
-                include_model=True,
-            )
-            juju.wait(lambda s: app not in s.apps, timeout=300)
+# NOTE: a "cloud-only constraint" xfail trap was intentionally dropped. The
+# obvious candidate (instance-type) is the WRONG example — code-verified vs 4.0,
+# LXD DOES read instance-type into c.InstanceType (container.go:54-56). The
+# genuinely-unsupported set (cpu-power, tags, container, allocate-public-ip,
+# image-id) is dropped-not-applied, and "applied" for those is not observable via
+# hardware-characteristics — so the unsupported case is calibrated deterministically
+# inside TestConstraintsHonored (cpu-power stored-but-not-applied) instead.
 
 
 @pytest.mark.xfail(
