@@ -11,17 +11,15 @@ on:
       - '.gitignore'
       - '.jujuignore'
   schedule:
-    # Nightly RELIABLE smoke tier across 4.0/stable + 4.0/edge (engine-under-test;
-    # regressions surface here even with no push). The full F1-F22 suite stays
-    # workflow_dispatch (flaky on stock runners) — see docs/CI-REFERENCE.md.
-    # Off-the-hour minute on purpose: GitHub frequently drops/delays scheduled runs
-    # at the top of the hour (':00') under load, so use ':19'.
+    # Nightly calibration across 4.0/stable + 4.0/edge (engine-under-test;
+    # regressions surface here even with no push). Two tiers run together (P2-9b):
+    #  - smoke (container-only) = the RELIABLE sentinel — must always give a clean read;
+    #  - full F1-F22 = deep calibration, PROMOTED to the nightly now that shared-model
+    #    contamination is fixed (#33). It runs continue-on-error + issue-on-failure so a
+    #    stock-runner infra flake never reddens the repo while we bank daily flake-data
+    #    — the evidence to later flip it to a hard gate. See docs/CI-REFERENCE.md.
+    # Off-the-hour minute (':19'): GitHub drops/delays ':00' scheduled runs under load.
     - cron: "19 4 * * *"
-    # Weekly FULL-suite attempt (Sun 05:19 UTC) — flake-data collection for the
-    # "promote the full suite to the nightly" decision (P2-9b). The integration
-    # job runs continue-on-error on schedule so a flaky full run never reddens
-    # the repo, but a failure still files an issue (signal, not noise).
-    - cron: "19 5 * * 0"
   workflow_dispatch:
 
 # Push/PR runs cancel a superseded run of the same ref. Scheduled + dispatch FULL
@@ -157,12 +155,10 @@ jobs:
     # run fine on a stock GitHub runner, so this serves BOTH roles: per-PR/push live
     # acceptance, AND the nightly (on schedule it also runs 4.0/edge — the
     # engine-under-test, where regressions land first; the calibration value-add).
-    # The full F1-F22 suite needs a real LXD host and stays in `integration`
-    # (workflow_dispatch + the weekly cron) — it is NOT reliable on a stock shared
-    # runner per-PR.
-    # Skip on the WEEKLY cron: that slot exists for the full suite below, and the
-    # daily 04:19 nightly covered the smoke tier an hour earlier.
-    if: github.event.schedule != '19 5 * * 0'
+    # The full F1-F22 suite runs in `integration` (below); on the nightly the smoke
+    # tier runs ALONGSIDE it as the RELIABLE sentinel — if the full suite hits an
+    # infra flake, smoke still gives a clean engine-regression read. No `if:` gate:
+    # smoke runs on every trigger (PR/push/dispatch acceptance + the nightly).
     # Workflow default is `permissions: {}` — without the job-level issues:write
     # grant, the failure-issue step below dies with "Resource not accessible by
     # integration" INSIDE an already-failing scheduled run (failure into a void).
@@ -231,16 +227,16 @@ jobs:
     name: Integration (${{ matrix.juju-channel }})
     runs-on: ubuntu-24.04
     needs: [unit, pack, workload-build]
-    # The FULL F1-F22 suite. Reliably green on a real LXD host (local), but NOT
-    # yet trusted on a stock shared GitHub runner — the heavy / error-driving /
-    # dynamic-storage tests race Juju timing under load. So the NIGHTLY runs the
-    # reliable smoke tier (above), and the full suite runs (a) on demand via
-    # workflow_dispatch, and (b) on the WEEKLY cron as continue-on-error
-    # flake-data collection — the evidence base for promoting it to the nightly
-    # (P2-9b). See docs/CI-REFERENCE.md.
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '19 5 * * 0'
-    # Weekly leg is data-collection: never reddens the repo (the issue step
-    # below still records the failure loudly). Dispatch runs report normally.
+    # The FULL F1-F22 suite. PROMOTED to the NIGHTLY (P2-9b) now that shared-model
+    # contamination is fixed (#33): it runs (a) on demand via workflow_dispatch as a
+    # HARD gate (real pass/fail), and (b) every night as continue-on-error +
+    # issue-on-failure — daily flake-data on stock-runner infra reliability, the
+    # evidence base for later flipping the nightly itself to a hard gate. Reliably
+    # green on a real LXD host; the heavy / error-driving / dynamic-storage tests can
+    # still race Juju timing under stock-runner load. See docs/CI-REFERENCE.md.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # Nightly is probation: never reddens the repo (the issue step below still records
+    # a failure loudly). Dispatch runs report normally (the hard gate).
     continue-on-error: ${{ github.event_name == 'schedule' }}
     permissions:
       contents: read
@@ -295,13 +291,13 @@ jobs:
           name: ${{ steps.report.outputs.name }}
           path: report.xml
           if-no-files-found: warn
-      # P2-9a: weekly full-suite failures feed the flake ledger via issues —
+      # P2-9b: nightly full-suite failures feed the flake ledger via issues —
       # continue-on-error above hides them from the badge, NOT from us.
-      - name: File issue on weekly full-suite failure
+      - name: File issue on nightly full-suite failure
         if: failure() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh issue create --repo "${{ github.repository }}" \
-            --title "Weekly full suite (${{ matrix.juju-channel }}) failed — $(date -u +%F)" \
-            --body "Weekly flake-data full-suite run failed on \`${{ matrix.juju-channel }}\`. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} (report.xml artifact has the per-test record)"
+            --title "Nightly full suite (${{ matrix.juju-channel }}) failed — $(date -u +%F)" \
+            --body "Nightly full-suite run failed on \`${{ matrix.juju-channel }}\`. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} (report.xml artifact has the per-test record)"

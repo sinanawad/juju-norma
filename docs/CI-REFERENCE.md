@@ -4,7 +4,7 @@ How we want CI/CD to look, distilled from the k8s sibling
 [`juju-norma-k8s`](https://github.com/sinanawad/juju-norma-k8s) `.github/workflows/`
 (6 workflows), adapted to the machine substrate (no ROCK/OCI).
 
-## Status (updated 2026-06-08) — CD is now LIVE
+## Status (updated 2026-06-19) — CD LIVE; full suite promoted to the nightly (P2-9b)
 
 The 2026-05-29 "CD deferred until we publish" scoping is **superseded**: the
 `juju-norma` CharmHub name is registered, a manage-scoped `CHARMHUB_TOKEN` secret
@@ -71,10 +71,12 @@ sibling, which is `workflow_dispatch`-only at one tier):
    `@pytest.mark.smoke` container-only cases (config, actions, relations, secrets,
    storage-filesystem, expose). This is the real per-PR regression guard and it
    needs **no** special runner or secrets.
-2. **`integration` (`workflow_dispatch`, `ci.yaml`)** — the full F1–F22 suite,
-   including the KVM/nesting cases. This tier benefits from a self-hosted /
-   nested-virt runner; until one exists, run it manually. Keep the
-   container-safe cases unmarked-but-included here too.
+2. **`integration` (nightly + `workflow_dispatch`, `ci.yaml`)** — the full F1–F22
+   suite. PROMOTED to the nightly (P2-9b, 2026-06-19) once shared-model
+   contamination was fixed (#33); it runs every night as `continue-on-error` +
+   issue-on-failure (probation — daily flake-data, never reddens the badge) and as a
+   HARD gate on `workflow_dispatch`. The KVM/nesting cases (F13 `virt-type`, F15
+   nested-lxd) are xfail on a stock runner and benefit from a capable runner.
 
 Net: the only thing that still wants a richer runner is the **VM/nesting subset**,
 not "LXD in CI" wholesale.
@@ -87,13 +89,16 @@ not "LXD in CI" wholesale.
 - **Dependabot** — done; GitHub Actions + `uv` + the `workload/` gomod module.
 - **lib-check job** — done; `canonical/charming-actions/check-libraries` fails on
   `cos_agent` drift (needs the read-only side of `CHARMHUB_TOKEN`).
-- **Nightly** — done; `schedule:` cron (04:00 UTC) runs the **reliable smoke tier**
-  across `4.0/stable` + `4.0/edge` (edge = engine-under-test). It has its OWN
-  concurrency group (keyed by event + run id) so a routine push can't cancel it.
-  The full F1-F22 suite is **not** on the nightly — it is reliably green on a real
-  LXD host (local) but flaky on a stock shared runner (heavy / error-driving /
-  dynamic-storage tests race Juju timing under load), so it stays
-  `workflow_dispatch` for local LXD / a future capable runner.
+- **Nightly** — done; `schedule:` cron (04:19 UTC) runs TWO tiers across
+  `4.0/stable` + `4.0/edge` (edge = engine-under-test). Each has its OWN concurrency
+  group (keyed by event + run id) so a routine push can't cancel it.
+  - **smoke** — the RELIABLE sentinel; always gives a clean engine-regression read.
+  - **full F1-F22** — PROMOTED to the nightly (P2-9b, 2026-06-19) once shared-model
+    contamination was fixed (#33, which isolated the FINDINGS#1 secret-wipe into
+    dedicated throwaway models). It runs `continue-on-error` + issue-on-failure:
+    daily flake-data on stock-runner infra reliability, never reddening the badge,
+    while we bank the evidence to flip the nightly itself to a hard gate. The old
+    weekly flake-data cron is retired (subsumed by the daily run).
 
 ## Publishing (live)
 
@@ -103,6 +108,8 @@ flow (`charmcraft upload` → `upload-resource norma-bin` → `release`) since
 `charming-actions/upload-charm` only auto-handles oci-image. The provenance spine
 is `build-resource.yaml` (SHA256SUMS + SLSA on the binary). `CHARMHUB_TOKEN` is set
 (manage scope) and the name is registered. First edge release: rev 1 + norma-bin r2.
-**Still ROADMAP:** a capable / self-hosted runner so the full F1-F22 suite (incl.
-the KVM/nested-lxd tier) can run nightly too, and the first `v*` tag to exercise
-`release-tag`.
+**Still ROADMAP:** flip the nightly full suite from probation (`continue-on-error`)
+to a HARD gate once daily flake-data confirms stock-runner reliability; and a
+capable / self-hosted runner for the KVM/nested-lxd tier (F13 `virt-type`, F15
+nested-lxd, currently xfail). The first `v*` tag already exercised `release-tag`
+(v0.1.0 shipped to `latest/stable`).
