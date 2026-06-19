@@ -224,8 +224,9 @@ def juju(environment_ready, charm_path, workload_bin):
 
 @pytest.fixture
 def isolated_juju(environment_ready, charm_path, workload_bin):
-    """A jubilant.Juju on a FRESH throwaway model, for tests that deploy AND remove
-    their own norma apps (P3 constraints / leadership).
+    """A jubilant.Juju on a FRESH throwaway model, for any test that deploys AND
+    removes its own apps (constraints, leadership, self-relate, subordinate,
+    cos-agent) instead of mutating the shared session model.
 
     Isolation is at the MODEL level, not just a separate app, on purpose: the norma
     charm owns an application secret, and ``remove-application`` of a secret-owner
