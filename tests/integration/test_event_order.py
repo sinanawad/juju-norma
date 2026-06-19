@@ -12,6 +12,7 @@ ledger and never touches the shared session app. Full-suite only (real machines)
 """
 
 import json
+import time
 
 import jubilant
 import pytest
@@ -33,6 +34,25 @@ def _first(events: list[dict], name: str) -> int | None:
     return next((i for i, e in enumerate(events) if e.get("event_name") == name), None)
 
 
+def _wait_recorded(juju: jubilant.Juju, unit: str, required: set[str], timeout: float = 300):
+    """Poll the ledger until every event in ``required`` has been recorded.
+
+    all_active does NOT imply the full startup sequence is in the ledger: the
+    holistic reconciler starts the workload DURING the install hook, so the charm
+    can report active after install alone — before config-changed/start fire and
+    are logged. (The 4.0/edge leg's timing exposed this as a flake.) So wait for the
+    events to actually appear before asserting their order.
+    """
+    deadline = time.monotonic() + timeout
+    events = _ledger(juju, unit)
+    while time.monotonic() < deadline:
+        if required <= {e.get("event_name") for e in events}:
+            return events
+        time.sleep(10)
+        events = _ledger(juju, unit)
+    return events  # return whatever we have; the caller's assertions report the gap
+
+
 @pytest.mark.mutates
 class TestEventOrder:
     def test_startup_hook_order(self, isolated_juju: jubilant.Juju, charm_path, workload_bin):
@@ -41,7 +61,9 @@ class TestEventOrder:
         juju.deploy(str(charm_path), app=ONE, resources={RESOURCE_NAME: str(workload_bin)})
         juju.wait(jubilant.all_active, timeout=900)
 
-        events = _ledger(juju, f"{ONE}/leader")
+        # active can be reached on the install hook alone (workload started there),
+        # so wait for the whole startup sequence to be logged before asserting order.
+        events = _wait_recorded(juju, f"{ONE}/leader", {"install", "config-changed", "start"})
         names = [e.get("event_name") for e in events]
         i_install = _first(events, "install")
         i_config = _first(events, "config-changed")
