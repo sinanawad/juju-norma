@@ -126,6 +126,8 @@ class NormaCharm(ops.CharmBase):
         self.framework.observe(self.on.check_security_action, self._on_check_security_action)
         self.framework.observe(self.on.test_defer_action, self._on_test_defer_action)
         self.framework.observe(self.on.test_workload_ops_action, self._on_test_workload_ops_action)
+        self.framework.observe(self.on.crash_workload_action, self._on_crash_workload_action)
+        self.framework.observe(self.on.set_health_action, self._on_set_health_action)
         self.framework.observe(self.on.introspect_action, self._on_introspect_action)
 
         # --- COS observability (F16): machine PUSH model via cos-agent ---
@@ -698,6 +700,30 @@ class NormaCharm(ops.CharmBase):
             }
         )
 
+    def _on_crash_workload_action(self, event: ops.ActionEvent) -> None:
+        """F1: SIGKILL the workload so systemd's Restart=on-failure brings it back.
+        Calibrates machine workload supervision (the k8s sibling relies on Pebble)."""
+        try:
+            before = self.driver.restart_count()
+            self.driver.kill()
+        except WorkloadError as exc:
+            event.fail(f"crash failed: {exc}")
+            return
+        self._log_event("crash-workload", {"restart-count-before": str(before)})
+        event.set_results({"killed": "true", "restart-count-before": str(before)})
+
+    def _on_set_health_action(self, event: ops.ActionEvent) -> None:
+        """F5: toggle the workload health flag the Go binary's /health reads; driving
+        it unhealthy makes the --check self-probe fail."""
+        healthy = bool(event.params.get("healthy", True))
+        try:
+            self.driver.set_health(healthy)
+        except WorkloadError as exc:
+            event.fail(f"set-health failed: {exc}")
+            return
+        self._log_event("set-health", {"healthy": str(healthy).lower()})
+        event.set_results({"healthy": str(healthy).lower()})
+
     def _on_test_workload_ops_action(self, event: ops.ActionEvent) -> None:
         """F5b: machine analogue of test-pebble-ops — systemd + file + subprocess suite."""
         event.log("Running workload-ops suite")
@@ -863,6 +889,7 @@ class NormaCharm(ops.CharmBase):
             "binary-present": self.driver.is_ready(),
             "service-running": running,
             "unit-file": os.path.exists(norma.SYSTEMD_UNIT_PATH),
+            "restart-count": self.driver.restart_count(),
         }
 
     def _collect_secrets(self) -> dict:

@@ -181,6 +181,15 @@ actions:
         type: boolean
         description: true to arm deferral, false to disarm.
         default: true
+  crash-workload:
+    description: SIGKILL the workload process to exercise systemd Restart=on-failure (F1 supervision).
+  set-health:
+    description: Toggle the workload health flag (drives the --check self-probe unhealthy/healthy).
+    params:
+      healthy:
+        type: boolean
+        description: true to mark healthy (remove flag), false to mark unhealthy (write flag).
+        default: true
   test-workload-ops:
     description: |
       Run the full host workload-ops suite (systemd service control + file
