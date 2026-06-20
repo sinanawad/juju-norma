@@ -156,6 +156,10 @@ class NormaCharm(ops.CharmBase):
             event.defer()
             self._defer_armed = False
             norma.write_defer_armed(False)
+            # Record which event was deferred so its re-emission can be tagged
+            # (ops clears event.deferred before re-running the handler, so the
+            # event object can't reveal the re-emission — F18).
+            norma.write_pending_reemit(event_name)
             return
         self._reconcile(event)
 
@@ -167,8 +171,12 @@ class NormaCharm(ops.CharmBase):
         """Holistic reconciler — idempotent; MUST NOT call event.defer()."""
         event_name = _event_to_kebab(event)
         extra: dict[str, str] = {}
-        if getattr(event, "deferred", False):
+        # Tag the re-emission of a previously-deferred event (F18). We match the
+        # persisted pending-reemit name rather than event.deferred (which ops has
+        # already reset to False by the time the re-emitted handler runs).
+        if norma.read_pending_reemit() == event_name:
             extra["re-emitted"] = "true"
+            norma.write_pending_reemit("")
         if isinstance(event, ops.RelationDepartedEvent) and event.departing_unit:
             extra["departing-unit"] = event.departing_unit.name
         if isinstance(event, ops.RelationEvent) and event.app:

@@ -134,6 +134,48 @@ class TestDeferralWhenArmed:
 
 
 # ----------------------------------------------------------------------------- #
+#  Re-emission marker (F18): tag the re-emitted event in the ledger             #
+# ----------------------------------------------------------------------------- #
+
+
+class TestReemitMarker:
+    """ops resets event.deferred=False before re-running a deferred handler, so the
+    charm persists the deferred event's NAME and matches it on the next reconcile to
+    tag the re-emission (the old getattr(event,'deferred') branch was dead code)."""
+
+    def test_defer_records_pending_reemit(self, monkeypatch, norma_bin):
+        monkeypatch.setattr(norma, "read_defer_armed", lambda: True)
+        ctx = ops.testing.Context(NormaCharm)
+        ctx.run(ctx.on.config_changed(), ops.testing.State(resources={norma_bin}))
+        # The deferred event's name is recorded for the later re-emission.
+        assert norma.read_pending_reemit() == "config-changed"
+
+    def test_reemission_tagged_and_cleared(self, norma_bin):
+        # Post-defer state: disarmed, pending re-emit set (as the gate would leave it).
+        norma.write_defer_armed(False)
+        norma.write_pending_reemit("config-changed")
+        ctx = ops.testing.Context(NormaCharm)
+        with ctx(ctx.on.config_changed(), ops.testing.State(resources={norma_bin})) as mgr:
+            mgr.run()
+            cc = [e for e in mgr.charm._event_ledger if e["event_name"] == "config-changed"]
+            assert len(cc) == 1
+            assert cc[0]["extra"].get("re-emitted") == "true"
+        # The one-shot pending flag is cleared after tagging.
+        assert norma.read_pending_reemit() == ""
+
+    def test_non_pending_event_not_tagged(self, norma_bin):
+        # A reconcile of a DIFFERENT event leaves the pending flag and adds no tag.
+        norma.write_defer_armed(False)
+        norma.write_pending_reemit("install")
+        ctx = ops.testing.Context(NormaCharm)
+        with ctx(ctx.on.config_changed(), ops.testing.State(resources={norma_bin})) as mgr:
+            mgr.run()
+            cc = [e for e in mgr.charm._event_ledger if e["event_name"] == "config-changed"]
+            assert cc and "re-emitted" not in cc[0]["extra"]
+        assert norma.read_pending_reemit() == "install"
+
+
+# ----------------------------------------------------------------------------- #
 #  Not-deferred paths: disarmed, or non-deferrable events                       #
 # ----------------------------------------------------------------------------- #
 

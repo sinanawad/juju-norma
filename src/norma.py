@@ -35,6 +35,11 @@ STORAGE_CONFIG = {
 # the k8s sibling where they reset on every pod recreation.
 LEDGER_FILE = "/tmp/norma-event-ledger.json"
 DEFER_FLAG_FILE = "/tmp/norma-defer-armed"
+# Name of a deferred event awaiting re-emission. ops resets event.deferred=False
+# before re-running a deferred handler, so the charm can't detect a re-emission
+# from the event object alone — we persist the deferred event's name here and match
+# it on the next reconcile to tag the re-emission in the ledger (F18).
+PENDING_REEMIT_FILE = "/tmp/norma-pending-reemit"
 
 # Events the defer-gate (F18) never defers: update-status is high-frequency, and
 # relation-broken re-emission fails because the relation is already gone.
@@ -74,6 +79,22 @@ def write_defer_armed(armed: bool) -> None:
     os.makedirs(os.path.dirname(DEFER_FLAG_FILE), exist_ok=True)
     with open(DEFER_FLAG_FILE, "w") as f:
         f.write("true" if armed else "false")
+
+
+def read_pending_reemit() -> str:
+    """Read the name of the event awaiting re-emission, or '' if none."""
+    try:
+        with open(PENDING_REEMIT_FILE) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def write_pending_reemit(event_name: str) -> None:
+    """Persist (event name) or clear ('') the event awaiting re-emission."""
+    os.makedirs(os.path.dirname(PENDING_REEMIT_FILE), exist_ok=True)
+    with open(PENDING_REEMIT_FILE, "w") as f:
+        f.write(event_name)
 
 
 def validate_config(config: dict) -> tuple[bool, str]:
