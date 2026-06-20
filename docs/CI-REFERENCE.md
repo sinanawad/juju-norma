@@ -4,7 +4,7 @@ How we want CI/CD to look, distilled from the k8s sibling
 [`juju-norma-k8s`](https://github.com/sinanawad/juju-norma-k8s) `.github/workflows/`
 (6 workflows), adapted to the machine substrate (no ROCK/OCI).
 
-## Status (updated 2026-06-19) — CD LIVE; full suite promoted to the nightly (P2-9b)
+## Status (updated 2026-06-20) — CD LIVE; full suite on the nightly (P2-9b) + gate hardened (pytest-timeout)
 
 The 2026-05-29 "CD deferred until we publish" scoping is **superseded**: the
 `juju-norma` CharmHub name is registered, a manage-scoped `CHARMHUB_TOKEN` secret
@@ -99,6 +99,38 @@ not "LXD in CI" wholesale.
     daily flake-data on stock-runner infra reliability, never reddening the badge,
     while we bank the evidence to flip the nightly itself to a hard gate. The old
     weekly flake-data cron is retired (subsumed by the daily run).
+
+## Full-suite gate reliability (hardening, 2026-06-20)
+
+The full F1-F22 suite is reliable on a real LXD host but **infra-flaky on a stock
+shared runner** — two distinct failure modes seen during the P3 wave, handled
+differently:
+
+- **Real test failure** (an assertion fires) → never auto-retry; it's a signal. The
+  4.0/**edge** leg caught a genuine `all_active`-vs-startup race in
+  `test_startup_hook_order` (#36→#37) that *all local stable runs missed* — edge's
+  different timing is a feature, not noise.
+- **Infra hang / runner stall** (a `juju` CLI or `wait` blocks on a wedged
+  controller; jubilant's `cli()` has no timeout of its own) → previously consumed the
+  whole step **silently** until the 80-min job cap with NO usable log (2026-06-19:
+  71-min stable-leg stall, log blob already GC'd). Now bounded + diagnosable:
+  - **`pytest-timeout`** (`pyproject.toml`: `timeout = 1800`, `timeout_method =
+    "signal"`) caps each test at 30 min, raises in-test with a **traceback at the
+    hang site**, and lets the rest of the suite continue. A true hang becomes a fast,
+    attributable failure instead of a silent step-long stall.
+  - **`--durations=15`** (Makefile) surfaces the slowest tests every run, so a
+    creeping/wedge-prone test is visible before it hangs.
+
+**Signal hierarchy (most→least reliable):** local `lxd` run (deterministic; catches
+logic bugs) > 4.0/**edge** CI leg (catches timing/version issues local misses) >
+4.0/**stable** stock-runner leg (the flakiest — infra hangs). So the pre-merge
+discipline is: prove green locally, dispatch the full suite on-branch, and on a
+**non-assertion** leg failure re-run that leg once to ride out infra before deciding
+— never blind-merge past a real `FAILED tests/...`.
+
+(Open: flipping the nightly probation → hard gate still needs daily flake-data; and
+if a *specific* heavy test starts hanging repeatedly, `--durations` + the
+pytest-timeout traceback now name it.)
 
 ## Publishing (live)
 

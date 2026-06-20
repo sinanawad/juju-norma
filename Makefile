@@ -25,12 +25,15 @@ unit:
 # stdout is buffered and lost if the step is killed at the CI timeout.
 # --junitxml=report.xml emits the machine-readable per-run pass/fail record (the
 # deliverable of a calibration charm; CI uploads it even on failure).
+# --durations=15 surfaces the slowest tests in the log (spot heavy/wedge-prone tests
+# proactively); the per-test 1800s timeout (pyproject) bounds any hang to a fast,
+# diagnosable failure with a traceback instead of a silent step-long stall.
 integration:
-	uv run pytest tests/integration -v --tb=short --log-cli-level=INFO --junitxml=report.xml
+	uv run pytest tests/integration -v --tb=short --log-cli-level=INFO --durations=15 --junitxml=report.xml
 
 # Container-only subset, safe on a stock LXD GitHub runner (no KVM/nesting).
 integration-smoke:
-	uv run pytest tests/integration -v --tb=short --log-cli-level=INFO --junitxml=report.xml -m smoke
+	uv run pytest tests/integration -v --tb=short --log-cli-level=INFO --durations=15 --junitxml=report.xml -m smoke
 
 integration-setup:
 	SETUP_ENVIRONMENT=1 uv run pytest tests/integration -v --tb=short --log-cli-level=INFO
