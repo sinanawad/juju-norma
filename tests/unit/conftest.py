@@ -29,6 +29,7 @@ def _no_host_side_effects(tmp_path, monkeypatch):
     monkeypatch.setattr(workload_driver.subprocess, "run", _fake_run)
     monkeypatch.setattr(norma, "LEDGER_FILE", str(tmp_path / "ledger.json"))
     monkeypatch.setattr(norma, "DEFER_FLAG_FILE", str(tmp_path / "defer"))
+    monkeypatch.setattr(norma, "PENDING_REEMIT_FILE", str(tmp_path / "pending-reemit"))
 
 
 @pytest.fixture
