@@ -16,6 +16,7 @@ dependencies = [
 dev = [
     "ops[testing]",
     "pytest",
+    "pytest-timeout",
     "coverage[toml]",
     "jubilant",
     "ruff",
@@ -48,6 +49,16 @@ pythonpath = ["src", "lib"]
 # moment Juju fixes it, instead of silently passing. The two existing markers are
 # environment-conditional and opt out with explicit `strict=False`.
 xfail_strict = true
+# Per-test backstop (pytest-timeout): a single wedged test — e.g. a jubilant
+# juju.cli()/wait() blocked on a hung controller, which has no timeout of its own —
+# would otherwise consume the whole CI step silently until the 80-min job cap, with
+# NO diagnostic (the 2026-06-19 stable-leg hang ran 71 min and left no usable log).
+# 1800s (30 min) is well above any legitimate single test (worst case ~deploy
+# wait(900) + integrate wait(300) + overhead) but bounds a true hang to a fast,
+# DIAGNOSABLE failure: the signal method raises in-test and dumps a traceback at the
+# hang site, and the rest of the suite still runs. Unit tests run far under it.
+timeout = 1800
+timeout_method = "signal"
 markers = [
     "smoke: container-only integration tests runnable per-PR on a stock LXD runner",
     "mutates: integration test may intentionally leave the unit non-active (skips the no-cascade guard)",
