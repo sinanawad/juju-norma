@@ -152,6 +152,10 @@ actions:
     description: Return cluster membership information.
   get-secret-info:
     description: Return info about the app-owned calibration secret.
+  rotate-secret:
+    description: Force an immediate rotation (new revision) of the app secret (leader-only).
+  read-shared-secret:
+    description: Read the app secret granted to this app over the calibration-requirer relation.
   check-storage:
     description: Check storage status and data integrity.
     params:

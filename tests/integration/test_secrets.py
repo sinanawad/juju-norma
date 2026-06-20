@@ -1,5 +1,7 @@
 """F10 secrets lifecycle (jubilant, LXD)."""
 
+import time
+
 import jubilant
 import pytest
 
@@ -34,3 +36,27 @@ class TestSecrets:
             (s.get("owner") == APP or s.get("owner-tag", "").endswith(APP))
             for s in secrets.values()
         ), f"no {APP}-owned secret in: {secrets}"
+
+    def test_rotate_secret_increments_revision(self, juju: jubilant.Juju):
+        """F10 rotate-now: the rotate-secret action forces a fresh revision.
+
+        Juju has no CLI to trigger an owner's rotate hook on demand, so the action
+        is the calibration lever. get-secret-info reports the latest revision, which
+        must increment after rotation (committed at hook end → poll the read-back).
+        """
+        before = juju.run(f"{APP}/leader", "get-secret-info").results
+        assert before.get("revision"), f"no revision reported by get-secret-info: {before}"
+        rev0 = int(before["revision"])
+
+        rotated = juju.run(f"{APP}/leader", "rotate-secret").results
+        assert rotated.get("rotated") == "true", f"rotate-secret did not succeed: {rotated}"
+
+        deadline = time.monotonic() + 120
+        latest = rev0
+        while time.monotonic() < deadline:
+            r = juju.run(f"{APP}/leader", "get-secret-info").results.get("revision")
+            if r and int(r) > rev0:
+                latest = int(r)
+                break
+            time.sleep(10)
+        assert latest > rev0, f"revision did not increment after rotate (still {rev0})"
