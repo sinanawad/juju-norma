@@ -116,6 +116,10 @@ class NormaCharm(ops.CharmBase):
         self.framework.observe(self.on.get_relation_data_action, self._on_get_relation_data_action)
         self.framework.observe(self.on.get_cluster_info_action, self._on_get_cluster_info_action)
         self.framework.observe(self.on.get_secret_info_action, self._on_get_secret_info_action)
+        self.framework.observe(self.on.rotate_secret_action, self._on_rotate_secret_action)
+        self.framework.observe(
+            self.on.read_shared_secret_action, self._on_read_shared_secret_action
+        )
         self.framework.observe(self.on.check_storage_action, self._on_check_storage_action)
         self.framework.observe(self.on.run_check_action, self._on_run_check_action)
         self.framework.observe(self.on.test_networking_action, self._on_test_networking_action)
@@ -486,7 +490,13 @@ class NormaCharm(ops.CharmBase):
         """F10: report the app-owned calibration secret (never the value)."""
         event.log("Retrieving secret info")
         peer = self.model.get_relation("norma-peers")
-        empty = {"secret-id": "", "has-content": "false", "rotation": "", "error": ""}
+        empty = {
+            "secret-id": "",
+            "has-content": "false",
+            "revision": "",
+            "rotation": "",
+            "error": "",
+        }
         if not peer:
             event.set_results(empty)
             return
@@ -495,23 +505,84 @@ class NormaCharm(ops.CharmBase):
             event.set_results(empty)
             return
         try:
-            content = self.model.get_secret(id=secret_id).get_content(refresh=True)
-            has_content = bool(content.get("password"))
+            secret = self.model.get_secret(id=secret_id)
+            has_content = bool(secret.get_content(refresh=True).get("password"))
+            # The latest revision number — increments on each rotation (F10).
+            revision = str(secret.get_info().revision)
             error = ""
         except (ops.SecretNotFoundError, ops.ModelError) as exc:
             # Calibration forensics: surface the exception class + message
             # verbatim (e.g. Juju's "lease not held") instead of erasing the
             # signal — a has-content=false alone is undiagnosable.
             has_content = False
+            revision = ""
             error = f"{type(exc).__name__}: {exc}"
         event.set_results(
             {
                 "secret-id": secret_id,
                 "has-content": str(has_content).lower(),
+                "revision": revision,
                 "rotation": "monthly",
                 "error": error,
             }
         )
+
+    def _on_rotate_secret_action(self, event: ops.ActionEvent) -> None:
+        """F10: force an immediate rotation (new revision) of the app secret.
+
+        Juju exposes no CLI to trigger an owner's rotate hook on demand, so this is
+        the calibration lever for rotate-now. Leader-only (only the owner rotates).
+        """
+        if not self.unit.is_leader():
+            event.fail("rotate-secret must run on the leader")
+            return
+        peer = self.model.get_relation("norma-peers")
+        secret_id = peer.data[self.app].get("secret-id", "") if peer else ""
+        if not secret_id:
+            event.fail("no app secret to rotate")
+            return
+        try:
+            self.model.get_secret(id=secret_id).set_content(
+                {"password": secrets.token_urlsafe(24)}
+            )
+        except (ops.SecretNotFoundError, ops.ModelError) as exc:
+            event.fail(f"rotate failed: {type(exc).__name__}: {exc}")
+            return
+        self._log_event("secret-rotate", {"trigger": "action"})
+        # The new revision is committed at hook end; read it back via get-secret-info.
+        event.set_results({"rotated": "true", "secret-id": secret_id})
+
+    def _on_read_shared_secret_action(self, event: ops.ActionEvent) -> None:
+        """F10 cross-app: read the app secret GRANTED to us over calibration-requirer.
+
+        Demonstrates the grant end-to-end: the provider propagates the granted
+        secret id into the relation app databag; here the requirer resolves it.
+        """
+        for rel in self.model.relations.get("calibration-requirer", []):
+            if rel.app is None:
+                continue
+            shared_id = rel.data[rel.app].get("shared-secret-id", "")
+            if not shared_id:
+                continue
+            try:
+                content = self.model.get_secret(id=shared_id).get_content(refresh=True)
+                event.set_results(
+                    {
+                        "secret-id": shared_id,
+                        "readable": str(bool(content.get("password"))).lower(),
+                        "error": "",
+                    }
+                )
+            except (ops.SecretNotFoundError, ops.ModelError) as exc:
+                event.set_results(
+                    {
+                        "secret-id": shared_id,
+                        "readable": "false",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            return
+        event.set_results({"secret-id": "", "readable": "false", "error": "no shared secret"})
 
     def _on_check_storage_action(self, event: ops.ActionEvent) -> None:
         """F11: report storage status. data=filesystem (marker/writable), blk=block device."""
@@ -929,6 +1000,10 @@ class NormaCharm(ops.CharmBase):
                     secret.revoke(rel)
                 else:
                     secret.grant(rel)
+                    # Propagate the granted id into the relation app databag so the
+                    # requirer can resolve it — the grant alone is invisible to the
+                    # consumer (F10 cross-app read).
+                    rel.data[self.app]["shared-secret-id"] = secret.id or secret_id
             except ops.ModelError:
                 logger.debug("Secret grant/revoke on relation %s skipped (departing)", rel.id)
 

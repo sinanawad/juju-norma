@@ -7,6 +7,7 @@ not require a norma-bin resource.
 
 import ops
 import ops.testing
+import pytest
 
 import norma
 import workload_driver
@@ -435,3 +436,78 @@ class TestDropRevisionForensics:
             entries = [e for e in mgr.charm._event_ledger if e["event_name"] == "secret-remove"]
         assert entries[0]["extra"]["revision"] == "1"
         assert entries[0]["extra"]["outcome"].startswith("skipped:ValueError")
+
+
+class TestRotateSecretAction:
+    """F10 rotate-now: the rotate-secret action forces a fresh revision (leader-only)."""
+
+    def test_rotate_forces_new_content(self):
+        existing = ops.testing.Secret(
+            {"password": "old"}, owner="app", label="calibration-password"
+        )
+        peer = ops.testing.PeerRelation(
+            endpoint="norma-peers", local_app_data={"secret-id": existing.id}
+        )
+        ctx = ops.testing.Context(NormaCharm)
+        out = ctx.run(
+            ctx.on.action("rotate-secret"),
+            ops.testing.State(relations={peer}, secrets={existing}, leader=True),
+        )
+        assert ctx.action_results["rotated"] == "true"
+        assert out.get_secret(id=existing.id).latest_content["password"] != "old"
+
+    def test_rotate_non_leader_fails(self):
+        ctx = ops.testing.Context(NormaCharm)
+        with pytest.raises(ops.testing.ActionFailed):
+            ctx.run(ctx.on.action("rotate-secret"), ops.testing.State(leader=False))
+
+    def test_rotate_without_secret_fails(self):
+        peer = ops.testing.PeerRelation(endpoint="norma-peers")  # no secret-id stored
+        ctx = ops.testing.Context(NormaCharm)
+        with pytest.raises(ops.testing.ActionFailed):
+            ctx.run(
+                ctx.on.action("rotate-secret"),
+                ops.testing.State(relations={peer}, leader=True),
+            )
+
+
+class TestReadSharedSecretAction:
+    """F10 cross-app: the requirer reads a secret granted over calibration-requirer."""
+
+    def test_requirer_reads_granted_secret(self):
+        # A secret we do NOT own (owner defaults to None = granted access), whose id
+        # the provider propagated into the requirer relation's REMOTE app data.
+        granted = ops.testing.Secret({"password": "pw"})
+        req = ops.testing.Relation(
+            endpoint="calibration-requirer",
+            remote_app_data={"shared-secret-id": granted.id},
+        )
+        ctx = ops.testing.Context(NormaCharm)
+        ctx.run(
+            ctx.on.action("read-shared-secret"),
+            ops.testing.State(relations={req}, secrets={granted}),
+        )
+        assert ctx.action_results["readable"] == "true"
+        assert ctx.action_results["secret-id"] == granted.id
+
+    def test_no_shared_secret_reported(self):
+        req = ops.testing.Relation(endpoint="calibration-requirer")  # no shared-secret-id
+        ctx = ops.testing.Context(NormaCharm)
+        ctx.run(ctx.on.action("read-shared-secret"), ops.testing.State(relations={req}))
+        assert ctx.action_results["readable"] == "false"
+
+
+class TestCrossAppPropagation:
+    """The granted secret id is propagated into the calibration-provider app databag."""
+
+    def test_grant_propagates_shared_secret_id(self, monkeypatch):
+        _ready(monkeypatch)
+        peer = ops.testing.PeerRelation(endpoint="norma-peers")
+        prov = ops.testing.Relation(endpoint="calibration-provider")
+        ctx = ops.testing.Context(NormaCharm)
+        out = ctx.run(
+            ctx.on.relation_changed(prov),
+            ops.testing.State(relations={peer, prov}, leader=True),
+        )
+        shared = out.get_relation(prov.id).local_app_data.get("shared-secret-id", "")
+        assert shared.startswith("secret:"), f"shared-secret-id not propagated: {shared!r}"
