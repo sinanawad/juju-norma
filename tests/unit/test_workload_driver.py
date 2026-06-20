@@ -251,3 +251,35 @@ class TestTeardown:
         assert not unit.exists()
         # Idempotent: a second teardown does not raise.
         driver.teardown()
+
+
+class TestSupervision:
+    """F1/F5 supervision seam: kill, restart_count, set_health."""
+
+    def test_kill_sends_sigkill(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(workload_driver.subprocess, "run", _fake_systemctl(calls))
+        _driver(tmp_path).kill()
+        assert any("kill" in c and "--signal=SIGKILL" in c for c in calls), calls
+
+    def test_restart_count_parses_nrestarts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(workload_driver.subprocess, "run", _fake_systemctl([], stdout="3\n"))
+        assert _driver(tmp_path).restart_count() == 3
+
+    def test_restart_count_unknown_is_negative_one(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(workload_driver.subprocess, "run", _fake_systemctl([], stdout=""))
+        assert _driver(tmp_path).restart_count() == -1
+
+    def test_set_health_writes_and_removes_flag(self, tmp_path):
+        # conftest isolates norma.HEALTH_FLAG_FILE to tmp_path/norma-unhealthy.
+        flag = tmp_path / "norma-unhealthy"
+        d = _driver(tmp_path)
+        d.set_health(False)
+        assert flag.exists()
+        d.set_health(True)
+        assert not flag.exists()
+
+    def test_set_health_idempotent_when_already_healthy(self, tmp_path):
+        # Removing an absent flag must not raise.
+        _driver(tmp_path).set_health(True)
+        assert not (tmp_path / "norma-unhealthy").exists()

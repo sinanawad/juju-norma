@@ -39,3 +39,42 @@ class TestWorkloadOps:
         ctx = ops.testing.Context(NormaCharm)
         ctx.run(ctx.on.action("test-workload-ops"), ops.testing.State())
         assert ctx.action_results["summary"] == "7/7 passed"
+
+
+class TestCrashWorkload:
+    """F1: the crash-workload action SIGKILLs the workload (systemd restarts it)."""
+
+    def test_crash_reports_killed(self):
+        ctx = ops.testing.Context(NormaCharm)
+        ctx.run(ctx.on.action("crash-workload"), ops.testing.State())
+        r = ctx.action_results
+        assert r["killed"] == "true"
+        # subprocess stubbed → NRestarts query returns "" → restart_count() == -1.
+        assert r["restart-count-before"] == "-1"
+
+
+class TestSetHealth:
+    """F5: the set-health action toggles the workload health flag file."""
+
+    def test_set_unhealthy_writes_flag(self):
+        import os
+
+        import norma
+
+        ctx = ops.testing.Context(NormaCharm)
+        ctx.run(ctx.on.action("set-health", params={"healthy": False}), ops.testing.State())
+        assert ctx.action_results["healthy"] == "false"
+        assert os.path.exists(norma.HEALTH_FLAG_FILE)
+
+    def test_set_healthy_removes_flag(self):
+        import os
+
+        import norma
+
+        os.makedirs(os.path.dirname(norma.HEALTH_FLAG_FILE), exist_ok=True)
+        with open(norma.HEALTH_FLAG_FILE, "w") as f:
+            f.write("unhealthy")
+        ctx = ops.testing.Context(NormaCharm)
+        ctx.run(ctx.on.action("set-health", params={"healthy": True}), ops.testing.State())
+        assert ctx.action_results["healthy"] == "true"
+        assert not os.path.exists(norma.HEALTH_FLAG_FILE)

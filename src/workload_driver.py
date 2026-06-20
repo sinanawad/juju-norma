@@ -87,6 +87,18 @@ class WorkloadDriver(Protocol):
         """Run the workload's --check self-probe; raise WorkloadError on failure."""
         ...
 
+    def kill(self) -> None:
+        """Hard-kill the workload process (SIGKILL) so the supervisor restarts it."""
+        ...
+
+    def restart_count(self) -> int:
+        """How many times the supervisor has auto-restarted the workload (-1 if unknown)."""
+        ...
+
+    def set_health(self, healthy: bool) -> None:
+        """Toggle the workload's externally-driven health (the /health flag file)."""
+        ...
+
 
 class SystemdDriver:
     """Drive the Norma workload via a charm-managed systemd unit.
@@ -233,6 +245,39 @@ class SystemdDriver:
             raise WorkloadError(f"binary not found at {self.binary_path}") from e
         except subprocess.CalledProcessError as e:
             raise WorkloadError(f"workload --check failed: {e.stderr.strip()}") from e
+
+    # -- supervision (F1/F5) -------------------------------------------------
+
+    def kill(self) -> None:
+        """SIGKILL the workload process.
+
+        Uses ``systemctl kill --signal=SIGKILL`` (not our own ``restart()``) so the
+        unit's ``Restart=on-failure`` is what brings it back — that is the systemd
+        supervision behaviour we calibrate. A clean ``restart()`` would mask it.
+        """
+        self._systemctl("kill", "--signal=SIGKILL", self.service_name, check=False)
+
+    def restart_count(self) -> int:
+        """The systemd ``NRestarts`` counter — increments each time the supervisor
+        auto-restarts the workload. Returns -1 if it can't be parsed."""
+        out = self._systemctl_output("show", self.service_name, "--property=NRestarts", "--value")
+        try:
+            return int(out.strip())
+        except ValueError:
+            return -1
+
+    def set_health(self, healthy: bool) -> None:
+        """Toggle the workload's health by creating/removing the flag file the Go
+        binary checks on every /health request (healthy = flag absent)."""
+        flag = Path(norma.HEALTH_FLAG_FILE)
+        try:
+            if healthy:
+                flag.unlink(missing_ok=True)
+            else:
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                flag.write_text("unhealthy")
+        except OSError as e:
+            raise WorkloadError(f"failed to toggle health flag {flag}: {e}") from e
 
     # -- internals -----------------------------------------------------------
 
