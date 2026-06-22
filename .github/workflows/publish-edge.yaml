@@ -81,7 +81,8 @@ jobs:
               echo "charmcraft $1 attempt $attempt failed (rc=$rc): $(tail -1 /tmp/cc.err)" >&2
               sleep 20
             done
-            echo "charmcraft $1 failed after 5 attempts" >&2
+            echo "charmcraft $1 failed after 5 attempts; full last error:" >&2
+            cat /tmp/cc.err >&2
             return 1
           }
           # Upload the CHARM first: CharmHub only learns the charm's declared
