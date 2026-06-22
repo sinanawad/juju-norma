@@ -5,7 +5,7 @@ name: Promote charm channel
 # its attached norma-bin resource (no re-pack), so the exact validated bits ship.
 #
 # Invoke: Actions -> "Promote charm channel" -> "Run workflow" -> pick channels.
-# Runs `charmcraft promote` server-side via CHARMHUB_TOKEN.
+# Runs `charmcraft promote` server-side via CHARMHUB_TOKEN_PUBLISH.
 
 on:
   workflow_dispatch:
@@ -40,7 +40,7 @@ jobs:
         run: sudo snap install charmcraft --classic
       - name: charmcraft promote
         env:
-          CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN }}
+          CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN_PUBLISH }}
         run: |
           set -uo pipefail
           # Refuse same-channel promotions — likely a misclick.

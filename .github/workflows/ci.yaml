@@ -80,8 +80,10 @@ jobs:
     needs: lint
     timeout-minutes: 5
     # check-libraries reads published lib revisions from CharmHub; contents:read
-    # is enough for checkout's default token. Requires the read-only
-    # CHARMHUB_TOKEN repo secret (package-view) — until it is set, this job fails.
+    # is enough for checkout's default token. Requires the READ-ONLY
+    # CHARMHUB_TOKEN_RO repo secret (package-view, charm-scoped) — until it is set,
+    # this job fails. Read-only on purpose: lib-check runs on PRs (incl. forks via
+    # the implicit secret-gate) so it must never hold publish scope.
     permissions:
       contents: read
     steps:
@@ -93,7 +95,7 @@ jobs:
         # published CharmHub revision (the lint→unit→lib-check→pack→integration gate).
         uses: canonical/charming-actions/check-libraries@1753e0803f70445132e92acd45c905aba6473225 # 2.7.0
         with:
-          credentials: ${{ secrets.CHARMHUB_TOKEN }}
+          credentials: ${{ secrets.CHARMHUB_TOKEN_RO }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-labels: false
 
