@@ -34,13 +34,20 @@ jobs:
     name: Publish charm + norma-bin resource to latest/edge
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # Only after a green CI run, or any manual dispatch.
+    # Only after a green CI run FROM THIS REPO (a fork PR whose head branch is named
+    # "main" also fires workflow_run with branches:[main] — the head_repository guard
+    # blocks it from publishing fork code with our CHARMHUB_TOKEN), or a manual dispatch.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          # Pin to the exact commit CI validated (empty on manual dispatch → main
+          # HEAD). Without this, a rapid follow-up push could ship unvalidated code:
+          # publish-edge (triggered by run A) would otherwise build whatever HEAD is.
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0 # charm `version` part needs git history
           persist-credentials: false
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6

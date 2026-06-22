@@ -12,7 +12,9 @@ description: |
 base: ubuntu@24.04
 platforms:
   amd64:
-  arm64:
+  # arm64 intentionally omitted: there is no arm64 build/smoke/publish leg for the
+  # subordinate (release-tag packs amd64 only). Re-add when a real arm64 leg exists
+  # — honesty rule, mirroring the principal.
 
 assumes:
   - juju >= 4.0

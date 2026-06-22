@@ -141,7 +141,7 @@ juju deploy ./juju-norma_amd64.charm --resource norma-bin=./norma --storage data
 
 # Subordinate role (replaces network-health / lxd-profile-subordinate):
 #   built from the subordinate variant (subordinate: true; requires juju-info container scope)
-juju deploy ./juju-norma-subordinate_amd64.charm --resource norma-bin=./norma
+juju deploy ./juju-norma-subordinate_amd64.charm
 juju integrate juju-norma-subordinate:juju-info juju-norma:juju-info
 ```
 
@@ -265,7 +265,7 @@ juju expose juju-norma
 juju status                                        # -> exposed
 
 # --- subordinate over juju-info (replaces network-health / lxd-profile-subordinate) ---
-juju deploy ./juju-norma-subordinate_amd64.charm --resource norma-bin=./norma
+juju deploy ./juju-norma-subordinate_amd64.charm
 juju integrate juju-norma-subordinate:juju-info juju-norma:juju-info
 juju status                                        # subordinate colocated on the same machine
 
