@@ -33,7 +33,7 @@ BRANCH="${2:-main}"
 if [[ -z "${REQUIRED_CHECKS:-}" ]]; then
   case "$REPO" in
     */juju-norma-k8s)
-      REQUIRED_CHECKS='["Lint", "Unit Tests", "Check Libraries", "Pack Charm", "Build ROCK"]' ;;
+      REQUIRED_CHECKS='["Lint", "Unit Tests", "Check Libraries", "Go Tests", "Pack Charm", "Build ROCK"]' ;;
     */juju-norma)
       REQUIRED_CHECKS='["Lint", "Unit Tests", "Check Libraries", "Pack Charm (+ subordinate)", "Build workload"]' ;;
     *)
