@@ -29,6 +29,7 @@
 #     Wait for latest/edge to carry <sha>, then tag <sha> `rev<N>` (lightweight,
 #     through the GitHub API: needs GH_TOKEN with contents: write, and GH_REPO).
 #     Idempotent; refuses to move an existing tag that points elsewhere.
+#     DRY_RUN=1 looks everything up but creates nothing.
 #
 # EDGE_VERSION (and EDGE_REVISION) override the CharmHub lookup for dry runs;
 # EDGE_WAIT_ATTEMPTS (default 20, 15 s apart) bounds tag-revision's wait.
@@ -46,7 +47,7 @@ NON_ARTIFACT=(
 # "<revision> <version>" of latest/edge, or nothing.
 edge_info() {
   if [[ -n "${EDGE_VERSION+set}" ]]; then
-    echo "${EDGE_REVISION:-0} ${EDGE_VERSION}"
+    echo "${EDGE_REVISION-} ${EDGE_VERSION}"
     return
   fi
   curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
@@ -55,13 +56,20 @@ edge_info() {
             | "\(.revision.revision) \(.revision.version)"][0] // empty'
 }
 
-# The full commit a recorded version maps to, or nothing.
+# The full commit a recorded version maps to, or nothing. Only describe output
+# can map: an abbreviated commit, "<tag>-<n>-g<commit>", or a bare tag; never a
+# branch name.
 version_commit() {
   local ref="$1"
   if [[ "$ref" =~ -g([0-9a-f]{7,40})$ ]]; then
     ref="${BASH_REMATCH[1]}"
+  elif [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]]; then
+    :
+  elif [[ -n "$ref" ]]; then
+    ref="refs/tags/${ref}"
+  else
+    return 0
   fi
-  [[ -n "$ref" ]] || return 0
   git rev-parse --verify --quiet "${ref}^{commit}" || true
 }
 
@@ -125,7 +133,12 @@ tag_revision() {
     echo "latest/edge never showed ${sha:0:7}; not tagging" >&2
     exit 1
   fi
-  existing="$(gh api "repos/${GH_REPO}/git/ref/tags/rev${rev}" --jq .object.sha 2>/dev/null || true)"
+  # Decide by exit status: on a 404 `gh api` exits non-zero AND prints the error
+  # body on stdout. Any other lookup error falls through to the create call,
+  # which then fails loudly.
+  if ! existing="$(gh api "repos/${GH_REPO}/git/ref/tags/rev${rev}" --jq .object.sha 2>/dev/null)"; then
+    existing=""
+  fi
   if [[ "$existing" == "$sha" ]]; then
     echo "rev${rev} already tags ${sha:0:7}" >&2
     return 0
@@ -133,6 +146,10 @@ tag_revision() {
   if [[ -n "$existing" ]]; then
     echo "rev${rev} already exists on ${existing:0:7}; not moving it" >&2
     exit 1
+  fi
+  if [[ -n "${DRY_RUN:-}" ]]; then
+    echo "dry run: would tag ${sha:0:7} as rev${rev}" >&2
+    return 0
   fi
   gh api "repos/${GH_REPO}/git/refs" -f ref="refs/tags/rev${rev}" -f sha="$sha" >/dev/null
   echo "tagged ${sha:0:7} as rev${rev}" >&2

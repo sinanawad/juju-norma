@@ -30,8 +30,9 @@ concurrency:
   # Serialize CharmHub edge uploads so two publishes can't race the channel
   # pointer. Never cancel an in-flight upload — let it finish; the newest pending
   # run wins after. Runs that cannot publish (anything but a green push CI run of
-  # this repo) get a group of their own, so they never displace a pending publish.
-  group: ${{ github.workflow }}${{ github.event_name == 'workflow_run' && (github.event.workflow_run.event != 'push' || github.event.workflow_run.conclusion != 'success' || github.event.workflow_run.head_repository.full_name != github.repository) && format('-noop-{0}', github.run_id) || '' }}
+  # this repo, or a dispatch of main) get a group of their own, so they never
+  # displace a pending publish.
+  group: ${{ github.workflow }}${{ ((github.event_name == 'workflow_run' && (github.event.workflow_run.event != 'push' || github.event.workflow_run.conclusion != 'success' || github.event.workflow_run.head_repository.full_name != github.repository)) || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')) && format('-noop-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 permissions:
