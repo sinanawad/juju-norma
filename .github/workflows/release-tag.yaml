@@ -71,8 +71,8 @@ jobs:
         run: sudo snap install charmcraft --classic
       - name: Build norma binary (stamped with the tag)
         run: make build-workload VERSION=${GITHUB_REF_NAME}
-      - name: Fetch charm libs + pack principal charm
-        run: charmcraft fetch-libs && charmcraft pack -v
+      - name: Pack principal charm (committed libs, as tested by CI)
+        run: charmcraft pack -v
       - name: Pack subordinate charm
         run: cd subordinate && charmcraft pack -v
       - name: Stage artifacts
