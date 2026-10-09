@@ -3,13 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # No paths filter on pull_request: main's branch protection requires these
+  # checks, and a trigger-level filter would leave them pending forever on a
+  # docs-only PR (nothing would ever report them).
   pull_request:
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
-      - '.jujuignore'
   schedule:
     # Nightly calibration across 4.0/stable + 4.0/edge (engine-under-test;
     # regressions surface here even with no push). Two tiers run together (P2-9b):
@@ -79,11 +76,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs: lint
     timeout-minutes: 5
-    # check-libraries reads published lib revisions from CharmHub; contents:read
-    # is enough for checkout's default token. Requires the READ-ONLY
-    # CHARMHUB_TOKEN_RO repo secret (package-view, charm-scoped) — until it is set,
-    # this job fails. Read-only on purpose: lib-check runs on PRs (incl. forks via
-    # the implicit secret-gate) so it must never hold publish scope.
+    # check-libraries reads published lib revisions from CharmHub anonymously
+    # (`charmcraft fetch-lib` needs no login; Dependabot PRs, which get no repo
+    # secrets, have always passed it), so this PR-facing job holds NO CharmHub
+    # credential at all. contents:read is enough for checkout's default token.
     permissions:
       contents: read
     steps:
@@ -91,13 +87,17 @@ jobs:
         with:
           persist-credentials: false
       - name: Check vendored charm libs are in sync with CharmHub
-        # Fails if any lib/charms/* (e.g. cos_agent) has drifted from its
-        # published CharmHub revision (the lint→unit→lib-check→pack→integration gate).
+        # Drift of any lib/charms/* (e.g. cos_agent) from its published CharmHub
+        # revision FAILS a pull request: refresh with `charmcraft fetch-lib` and
+        # commit it. (The action defaults fail-build to false, which only logged
+        # drift.) On push and scheduled runs drift is only logged: an upstream lib
+        # release must not turn main red and freeze publishing, and what ships is
+        # the committed, tested libs anyway (pack/publish never fetch).
         uses: canonical/charming-actions/check-libraries@1753e0803f70445132e92acd45c905aba6473225 # 2.7.0
         with:
-          credentials: ${{ secrets.CHARMHUB_TOKEN_RO }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-labels: false
+          fail-build: ${{ github.event_name == 'pull_request' }}
 
   workload-build:
     name: Build workload
@@ -134,9 +134,9 @@ jobs:
         uses: canonical/setup-lxd@8c6a87bfb56aa48f3fb9b830baa18562d8bfd4ee # v1
       - name: Install charmcraft
         run: sudo snap install charmcraft --classic
-      - name: Fetch charm libs
-        run: charmcraft fetch-libs
       - name: Pack principal charm
+        # Committed libs only (no fetch-libs): the integration tests below then
+        # test exactly what ships.
         run: charmcraft pack
       - name: Pack subordinate charm
         run: cd subordinate && charmcraft pack
