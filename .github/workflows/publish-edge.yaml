@@ -125,6 +125,9 @@ jobs:
       issues: write
     steps:
       - name: Open, update or close the publish-failure issue
+        # A STEP timeout is recorded as a failure, which continue-on-error
+        # absorbs; a job timeout would be a cancel, which it does not.
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
