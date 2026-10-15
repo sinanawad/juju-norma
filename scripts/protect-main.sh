@@ -35,7 +35,7 @@ if [[ -z "${REQUIRED_CHECKS:-}" ]]; then
     */juju-norma-k8s)
       REQUIRED_CHECKS='["Lint", "Unit Tests", "Check Libraries", "Go Tests", "Pack Charm", "Build ROCK"]' ;;
     */juju-norma)
-      REQUIRED_CHECKS='["Lint", "Unit Tests", "Check Libraries", "Pack Charm (+ subordinate)", "Build workload"]' ;;
+      REQUIRED_CHECKS='["Lint", "Unit Tests", "Check Libraries", "Go Tests", "Pack Charm (+ subordinate)", "Build workload"]' ;;
     *)
       echo "Unknown repo ${REPO}: set REQUIRED_CHECKS='[\"Job name\", ...]'" >&2
       exit 1 ;;

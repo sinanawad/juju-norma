@@ -1,19 +1,22 @@
 // Package main implements the Norma calibration workload binary.
 //
 // This is a single static HTTP server (CGO_ENABLED=0) that provides health,
-// version, readiness, metrics, and health-toggle endpoints. The same binary
-// feeds both norma charms: on k8s it runs under Pebble inside a ROCK; on
-// machines it runs directly on the host under a charm-managed systemd unit
-// (delivered as a charm file resource). It is fully substrate-neutral — it
-// reads PORT and HEALTH_FLAG_FILE from the environment and supports a
-// `--check` self-probe used as a liveness check.
+// version, readiness, metrics, and health-toggle endpoints. The same source
+// feeds both norma charms and is kept byte-identical in juju-norma and
+// juju-norma-k8s: on k8s it runs under Pebble inside a ROCK; on machines it runs
+// directly on the host under a charm-managed systemd unit (delivered as a charm
+// file resource). It is substrate-neutral: it reads PORT and HEALTH_FLAG_FILE
+// from the environment, and supports a `--check` self-probe (liveness) and
+// `--version`.
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,14 +32,25 @@ import (
 // version is set at build time via ldflags: -X main.version=X.Y.Z
 var version = "dev"
 
-// healthy tracks the in-memory health state. It is toggled atomically via
-// POST /toggle-health. Starts as true (healthy).
-var healthy atomic.Bool
-
 // healthFlagFile is the path to the flag file whose existence indicates
 // unhealthy state. Defaults to /tmp/norma-unhealthy; overridden by the
 // HEALTH_FLAG_FILE environment variable.
+//
+// The flag file is the SINGLE source of truth for health. It used to be ANDed
+// with an in-memory atomic bool, which wedged the workload permanently
+// unhealthy: POST /toggle-health flipped both signals in opposite directions,
+// so once they desynchronised the AND could never be true again. That state was
+// reachable two ways in normal operation — the charm's health action
+// (toggle-health on k8s, set-health on machines) writes this file directly,
+// never touching the bool, and a restart with the file present starts the
+// process desynchronised. A file is also the only
+// signal that survives a restart and is visible to both the charm and the
+// workload, so it is the correct one to keep.
 var healthFlagFile string
+
+// lastObservedHealthy backs the sampled transition counter: -1 = not yet
+// observed, 0 = unhealthy, 1 = healthy.
+var lastObservedHealthy atomic.Int32
 
 // ---------- Prometheus metrics ----------
 
@@ -49,22 +63,39 @@ var (
 		[]string{"method", "path", "status"},
 	)
 
+	// Sampled, not exact: health can change out-of-process (the charm's health
+	// action writes the flag file directly), so transitions are
+	// counted when observed — on scrape and on POST /toggle-health. Two flips
+	// between observations therefore count as none. Exactness would require
+	// watching the file, which is not worth an inotify dependency here.
 	healthTogglesTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "norma_health_toggles_total",
-			Help: "Total number of health state toggles.",
+			Help: "Observed health state transitions (sampled at scrape and on toggle).",
 		},
 	)
 
-	healthyGauge = prometheus.NewGauge(
+	// GaugeFunc, not Gauge: evaluated at scrape time, so it reflects health
+	// however it was changed. A plain Gauge was only ever Set() from main() and
+	// the HTTP toggle handler, which meant the charm's health action (a direct
+	// flag-file write) never moved it, and the shipped health alert could
+	// therefore never fire.
+	healthyGauge = prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Name: "norma_healthy",
 			Help: "Whether the workload considers itself healthy (1) or not (0).",
+		},
+		func() float64 {
+			if observeHealth() {
+				return 1
+			}
+			return 0
 		},
 	)
 )
 
 func init() {
+	lastObservedHealthy.Store(-1) // "not yet observed" — avoids a bogus first transition
 	prometheus.MustRegister(httpRequestsTotal)
 	prometheus.MustRegister(healthTogglesTotal)
 	prometheus.MustRegister(healthyGauge)
@@ -73,9 +104,7 @@ func init() {
 // ---------- HTTP handlers ----------
 
 // handleHealth returns 200 "OK" when healthy, 500 "UNHEALTHY" otherwise.
-// Health is determined by two conditions (both must be satisfied for healthy):
-//  1. The atomic bool must be true.
-//  2. The health flag file must NOT exist.
+// Healthy means the health flag file does not exist — see healthFlagFile.
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	if isHealthy() {
 		w.WriteHeader(http.StatusOK)
@@ -99,30 +128,16 @@ func handleReady(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "READY")
 }
 
-// handleToggleHealth atomically flips the in-memory health bool AND toggles
-// the flag file (create if absent, remove if present). Returns JSON with the
-// previous and current health states.
+// handleToggleHealth toggles the health flag file (create if absent, remove if
+// present) and returns JSON with the previous and current health states.
+//
+// It deliberately drives the SAME signal the charm's health action
+// drives, so the two paths agree and either can undo the other. The gauge needs
+// no update here: it is a GaugeFunc evaluated at scrape time.
 func handleToggleHealth(w http.ResponseWriter, r *http.Request) {
-	// Determine previous state from both signals.
 	prevHealthy := isHealthy()
-
-	// Flip the atomic bool.
-	// Load current value, store the opposite.
-	oldBool := healthy.Load()
-	healthy.Store(!oldBool)
-
-	// Toggle the flag file.
 	toggleFlagFile()
-
-	healthTogglesTotal.Inc()
-
-	// Update the gauge based on the new combined state.
-	nowHealthy := isHealthy()
-	if nowHealthy {
-		healthyGauge.Set(1)
-	} else {
-		healthyGauge.Set(0)
-	}
+	nowHealthy := observeHealth() // records the transition we just caused
 
 	prev := healthString(prevHealthy)
 	cur := healthString(nowHealthy)
@@ -137,16 +152,26 @@ func handleToggleHealth(w http.ResponseWriter, r *http.Request) {
 
 // ---------- helpers ----------
 
-// isHealthy returns true only if the atomic bool is true AND the flag file
-// does not exist.
+// isHealthy reports health from the single source of truth: the workload is
+// healthy exactly when the flag file does not exist. Pure — no side effects.
 func isHealthy() bool {
-	if !healthy.Load() {
-		return false
+	return !flagFileExists()
+}
+
+// observeHealth reads health and records a transition against the previous
+// observation. Used where sampling is meaningful (scrape, toggle) so that
+// out-of-process changes — the charm writing the flag file — are
+// still counted. See healthTogglesTotal for the sampling caveat.
+func observeHealth() bool {
+	h := isHealthy()
+	var cur int32
+	if h {
+		cur = 1
 	}
-	if flagFileExists() {
-		return false
+	if prev := lastObservedHealthy.Swap(cur); prev >= 0 && prev != cur {
+		healthTogglesTotal.Inc()
 	}
-	return true
+	return h
 }
 
 // flagFileExists returns true if the health flag file exists on disk.
@@ -196,7 +221,8 @@ func (sr *statusRecorder) WriteHeader(code int) {
 // ---------- self-check (--check mode) ----------
 
 // runCheck makes an HTTP GET to http://localhost:<port>/health and exits 0 if
-// healthy (2xx), 1 otherwise. This is used by the systemd/Pebble liveness check.
+// healthy (2xx), 1 otherwise. Used as the liveness check (a Pebble exec check
+// on k8s, the systemd unit's probe on machines).
 func runCheck(port int) {
 	url := fmt.Sprintf("http://localhost:%d/health", port)
 	resp, err := http.Get(url) //nolint:gosec // localhost only
@@ -229,7 +255,18 @@ func main() {
 
 	port := flag.Int("port", defaultPort, "HTTP listen port")
 	check := flag.Bool("check", false, "Run health check against own /health endpoint and exit")
+	showVersion := flag.Bool("version", false, "Print the build version and exit")
 	flag.Parse()
+
+	// --version mode: print the version baked in at link time and exit. The k8s
+	// charm's get-version action execs this to identify exactly which workload
+	// image (OCI resource revision) is running: the env-injected VERSION is the
+	// charm's version, which does not change on a `refresh --resource` swap. The
+	// machine charm's file resource carries the same stamp.
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	// --check mode: probe and exit.
 	if *check {
@@ -237,49 +274,72 @@ func main() {
 		return // unreachable; runCheck calls os.Exit
 	}
 
-	// Initialise health state: healthy unless the flag file already exists.
-	healthy.Store(true)
-	if isHealthy() {
-		healthyGauge.Set(1)
-	} else {
-		healthyGauge.Set(0)
-	}
+	// No health state to initialise: the flag file IS the state, so the workload
+	// comes up matching whatever the charm last set — including across a
+	// restart, which the previous in-memory bool got wrong.
 
-	// Build the mux using Go 1.22+ method-pattern routing.
+	addr := fmt.Sprintf(":%d", *port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("norma workload listening on %s (version %s)\n", addr, version)
+
+	// Graceful shutdown: `systemctl stop` (machines) and Pebble (k8s) both send
+	// SIGTERM; drain in-flight requests instead of dropping connections.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	// After the first signal, restore default handling: a second one kills at once
+	// instead of waiting for the drain.
+	context.AfterFunc(ctx, stop)
+	srv := &http.Server{Handler: newMux(), ReadHeaderTimeout: 10 * time.Second}
+	if err := serve(ctx, srv, ln); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// newMux builds the router, using Go 1.22+ method-pattern routing; every route
+// is instrumented, /metrics included.
+func newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", instrumentHandler("/health", handleHealth))
 	mux.HandleFunc("GET /version", instrumentHandler("/version", handleVersion))
 	mux.HandleFunc("GET /ready", instrumentHandler("/ready", handleReady))
 	mux.HandleFunc("POST /toggle-health", instrumentHandler("/toggle-health", handleToggleHealth))
-
-	// /metrics is served by promhttp and also instrumented.
 	metricsHandler := promhttp.Handler()
 	mux.HandleFunc("GET /metrics", instrumentHandler("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		metricsHandler.ServeHTTP(w, r)
 	}))
+	return mux
+}
 
-	addr := fmt.Sprintf(":%d", *port)
-	fmt.Printf("norma workload listening on %s (version %s)\n", addr, version)
+// shutdownGrace bounds how long in-flight requests may take to drain (a var
+// only so tests can shorten it).
+var shutdownGrace = 5 * time.Second
 
-	srv := &http.Server{Addr: addr, Handler: mux} //nolint:gosec // sterile calibration server
-
-	// Graceful shutdown: systemctl stop sends SIGTERM; drain in-flight requests
-	// instead of dropping connections (the systemd unit is Type=simple).
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
-			os.Exit(1)
-		}
-	}()
-
-	<-ctx.Done()
-	stop()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// serve runs srv on ln until ctx is cancelled, then shuts down gracefully:
+// it stops accepting connections and waits up to shutdownGrace for in-flight
+// requests, then closes whatever is left (logged, not an error: a stop that had
+// to cut a slow request is still a clean stop, so systemd doesn't record the
+// unit as failed). Returns nil on shutdown, or the error that stopped serving.
+func serve(ctx context.Context, srv *http.Server, ln net.Listener) error {
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+	select {
+	case err := <-errc:
+		return err // Serve never returns nil; it stopped on its own
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "shutdown: %v; closing remaining connections\n", err)
+		_ = srv.Close()
 	}
+	if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }

@@ -16,6 +16,26 @@ import jubilant
 from .conftest import APP
 
 
+def _scrape_norma_healthy(juju: jubilant.Juju) -> str:
+    """Read `norma_healthy` from the workload's own /metrics on the unit, live.
+
+    Asserts exactly the series Prometheus scrapes (and the shipped health alert
+    fires on), not the charm's view of health.
+    """
+    port = juju.config(APP).get("calibration-int", 8080)
+    # test-workload-ops ends with a service restart and the unit is Type=simple, so
+    # the port may not be bound yet: retry refused connections, bounded.
+    task = juju.exec(
+        f"curl -fsS -m 5 --retry 5 --retry-connrefused --retry-delay 1 localhost:{port}/metrics",
+        unit=f"{APP}/leader",
+        wait=60,
+    )
+    for line in task.stdout.splitlines():
+        if line.startswith("norma_healthy "):
+            return line.split()[1]
+    raise AssertionError(f"norma_healthy absent from /metrics:\n{task.stdout}")
+
+
 def _restart_count(juju: jubilant.Juju) -> int:
     svc = json.loads(
         juju.run(f"{APP}/leader", "introspect", params={"sections": "systemd-service"}).results[
@@ -56,6 +76,10 @@ class TestWorkloadSupervision:
             assert ops.get("binary-check", "").startswith("fail"), (
                 f"unhealthy workload should fail the --check self-probe: {ops}"
             )
+            # The metric follows the action. Before the canonical workload it
+            # never moved (a plain Gauge set only by the HTTP toggle), so the
+            # shipped NormaWorkloadUnhealthy alert could never fire.
+            assert _scrape_norma_healthy(juju) == "0"
         finally:
             juju.run(f"{APP}/leader", "set-health", params={"healthy": True})
 
@@ -63,3 +87,4 @@ class TestWorkloadSupervision:
         assert ops.get("binary-check") == "pass", (
             f"healthy workload should pass the --check self-probe: {ops}"
         )
+        assert _scrape_norma_healthy(juju) == "1"

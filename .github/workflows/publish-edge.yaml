@@ -58,7 +58,7 @@ jobs:
       sha: ${{ steps.decide.outputs.sha }}
       publish: ${{ steps.decide.outputs.publish }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 5
         with:
           # The exact commit CI validated (empty on manual dispatch → main HEAD).
@@ -101,7 +101,7 @@ jobs:
     outputs:
       published: ${{ steps.release.outputs.published }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 5
         with:
           ref: ${{ needs.gate.outputs.sha }} # the CI-validated commit (see gate)
@@ -115,7 +115,7 @@ jobs:
         run: |
           rollback=$(scripts/charmhub-edge.sh would-roll-back juju-norma "$(git rev-parse HEAD)")
           echo "rollback=$rollback" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: steps.recheck.outputs.rollback == 'false'
         timeout-minutes: 5
         with:
@@ -188,7 +188,7 @@ jobs:
     permissions:
       contents: write # create the rev<N> tag; this job holds no CharmHub secret
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 5
         with:
           ref: ${{ needs.gate.outputs.sha }}
