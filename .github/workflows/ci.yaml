@@ -35,11 +35,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Go toolchain so `make lint` can gate the Go workload too (gofmt + vet).
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: workload/go.mod
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -55,7 +55,7 @@ jobs:
     needs: lint
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -83,7 +83,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check vendored charm libs are in sync with CharmHub
@@ -104,10 +104,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: workload/go.mod
       - run: |
@@ -121,13 +121,46 @@ jobs:
           path: norma
           if-no-files-found: error
 
+  go-test:
+    name: Go Tests
+    runs-on: ubuntu-24.04
+    needs: lint
+    timeout-minutes: 15
+    # The workload's tests (main.go/main_test.go are byte-identical with
+    # juju-norma-k8s): publish-edge only ships commits whose push CI passed.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Single source of truth: read the version straight from go.mod so a
+          # Dependabot bump to the `go` directive can't drift from the toolchain
+          # CI installs.
+          go-version-file: workload/go.mod
+          cache-dependency-path: workload/go.sum
+      - name: Build
+        working-directory: workload
+        run: CGO_ENABLED=0 go build -o norma ./...
+      - name: Vet
+        working-directory: workload
+        run: go vet ./...
+      - name: Test
+        working-directory: workload
+        # -race because health is read concurrently (HTTP handlers + Prometheus
+        # scrape). -count=1 defeats the test cache so a green here always means
+        # the tests actually ran.
+        run: go test -race -count=1 -v ./...
+
   pack:
     name: Pack Charm (+ subordinate)
     runs-on: ubuntu-24.04
     needs: lint
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Setup LXD
@@ -174,7 +207,7 @@ jobs:
         # Nightly (schedule) → 4.0/stable + 4.0/edge; everything else → stable only.
         channel: ${{ github.event_name == 'schedule' && fromJSON('["4.0/stable", "4.0/edge"]') || fromJSON('["4.0/stable"]') }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -252,7 +285,7 @@ jobs:
         # matrix so 4.1 / 26.04 later are one-line changes.
         juju-channel: ["4.0/stable", "4.0/edge"]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
