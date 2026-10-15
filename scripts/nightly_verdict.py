@@ -26,7 +26,11 @@ external store is needed.
 Usage:
     python3 scripts/nightly_verdict.py <artifacts-dir>
 
-Env: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, GITHUB_API_URL
+Env: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, GITHUB_API_URL,
+     EXPECTED_LEGS (optional, comma-separated leg names, e.g. "4.0-stable-full"):
+     any expected leg without a report is a failure. Without it, a leg that died
+     before pytest wrote its report (bootstrap failure, step timeout) went
+     unnoticed whenever another leg did report, and the issue was closed as green.
 """
 
 from __future__ import annotations
@@ -130,6 +134,14 @@ def parse_reports(root: pathlib.Path) -> tuple[dict[str, dict[str, list[str]]], 
                 "regressions": sorted(set(regressions)),
                 "xpass": sorted(set(xpass)),
             }
+
+    reported = {path.parent.name.replace("test-report-", "") for path in report_files}
+    expected = [leg.strip() for leg in os.environ.get("EXPECTED_LEGS", "").split(",")]
+    for leg in (leg for leg in expected if leg and leg not in reported):
+        problems.append(
+            f"`{leg}`: no report.xml — the leg died before pytest wrote one (e.g. "
+            "bootstrap failure or step timeout). Treat this as a failure, not a pass."
+        )
     return results, problems
 
 

@@ -300,3 +300,5 @@ jobs:
         run: python3 scripts/nightly_verdict.py artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Every scheduled leg; a leg with no report is a failure, not a pass.
+          EXPECTED_LEGS: 4.0-stable-smoke,4.0-edge-smoke,4.0-stable-full,4.0-edge-full
