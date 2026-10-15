@@ -23,7 +23,13 @@ def _scrape_norma_healthy(juju: jubilant.Juju) -> str:
     fires on), not the charm's view of health.
     """
     port = juju.config(APP).get("calibration-int", 8080)
-    task = juju.exec(f"curl -fsS localhost:{port}/metrics", unit=f"{APP}/leader")
+    # test-workload-ops ends with a service restart and the unit is Type=simple, so
+    # the port may not be bound yet: retry refused connections, bounded.
+    task = juju.exec(
+        f"curl -fsS -m 5 --retry 5 --retry-connrefused --retry-delay 1 localhost:{port}/metrics",
+        unit=f"{APP}/leader",
+        wait=60,
+    )
     for line in task.stdout.splitlines():
         if line.startswith("norma_healthy "):
             return line.split()[1]

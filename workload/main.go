@@ -258,10 +258,11 @@ func main() {
 	showVersion := flag.Bool("version", false, "Print the build version and exit")
 	flag.Parse()
 
-	// --version mode: print the version baked in at link time and exit. The
+	// --version mode: print the version baked in at link time and exit. The k8s
 	// charm's get-version action execs this to identify exactly which workload
-	// image (OCI resource revision) is running — the env-injected VERSION is the
-	// charm's version, which does not change on a `refresh --resource` image swap.
+	// image (OCI resource revision) is running: the env-injected VERSION is the
+	// charm's version, which does not change on a `refresh --resource` swap. The
+	// machine charm's file resource carries the same stamp.
 	if *showVersion {
 		fmt.Println(version)
 		return
@@ -289,6 +290,9 @@ func main() {
 	// SIGTERM; drain in-flight requests instead of dropping connections.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	// After the first signal, restore default handling: a second one kills at once
+	// instead of waiting for the drain.
+	context.AfterFunc(ctx, stop)
 	srv := &http.Server{Handler: newMux(), ReadHeaderTimeout: 10 * time.Second}
 	if err := serve(ctx, srv, ln); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
@@ -311,12 +315,15 @@ func newMux() *http.ServeMux {
 	return mux
 }
 
-// shutdownGrace bounds how long in-flight requests may take to drain.
-const shutdownGrace = 5 * time.Second
+// shutdownGrace bounds how long in-flight requests may take to drain (a var
+// only so tests can shorten it).
+var shutdownGrace = 5 * time.Second
 
 // serve runs srv on ln until ctx is cancelled, then shuts down gracefully:
 // it stops accepting connections and waits up to shutdownGrace for in-flight
-// requests. Returns nil on a clean shutdown, or the error that stopped serving.
+// requests, then closes whatever is left (logged, not an error: a stop that had
+// to cut a slow request is still a clean stop, so systemd doesn't record the
+// unit as failed). Returns nil on shutdown, or the error that stopped serving.
 func serve(ctx context.Context, srv *http.Server, ln net.Listener) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
@@ -328,7 +335,8 @@ func serve(ctx context.Context, srv *http.Server, ln net.Listener) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+		fmt.Fprintf(os.Stderr, "shutdown: %v; closing remaining connections\n", err)
+		_ = srv.Close()
 	}
 	if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
 		return err

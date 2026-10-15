@@ -65,8 +65,9 @@ func TestIsHealthyTracksFlagFile(t *testing.T) {
 // flipped BOTH signals in opposite directions. Once they desynchronised the AND
 // could never be true again, so the workload was stuck unhealthy forever. Both
 // routes into that state were reachable in normal operation: the charm's
-// toggle-health action writes the flag file without touching the bool, and a
-// pod restart with the file present begins desynchronised.
+// health action (toggle-health on k8s, set-health on machines) writes the flag
+// file without touching the bool, and a restart with the file present begins
+// desynchronised.
 //
 // Against the old implementation the unhealthyAtStart case fails on the very
 // first toggle.
@@ -120,7 +121,7 @@ func TestGaugeReflectsCharmDrivenToggle(t *testing.T) {
 	if got := testutil.ToFloat64(healthyGauge); got != 1 {
 		t.Fatalf("healthy: gauge = %v, want 1", got)
 	}
-	// Exactly what src/charm.py's toggle-health action does.
+	// Exactly what the charm's health action does (it writes the file directly).
 	if err := os.WriteFile(path, []byte("unhealthy"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +294,10 @@ func TestHandleReadyAlwaysReady(t *testing.T) {
 // TestInstrumentHandlerRecordsStatus checks the wrapper captures the real
 // status code rather than defaulting to 200.
 func TestInstrumentHandlerRecordsStatus(t *testing.T) {
+	// Delta, not absolute: the counter is process-global, so -count>1 reruns
+	// (and any other test hitting this label set) would otherwise accumulate.
+	counter := httpRequestsTotal.WithLabelValues("GET", "/probe", "418")
+	before := testutil.ToFloat64(counter)
 	rec := httptest.NewRecorder()
 	h := instrumentHandler("/probe", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
@@ -302,8 +307,8 @@ func TestInstrumentHandlerRecordsStatus(t *testing.T) {
 	if rec.Code != http.StatusTeapot {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusTeapot)
 	}
-	if got := testutil.ToFloat64(httpRequestsTotal.WithLabelValues("GET", "/probe", "418")); got != 1 {
-		t.Errorf("counter for GET /probe 418 = %v, want 1", got)
+	if got := testutil.ToFloat64(counter) - before; got != 1 {
+		t.Errorf("counter for GET /probe 418 rose by %v, want 1", got)
 	}
 }
 
@@ -399,5 +404,45 @@ func TestServeReturnsServeError(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("serve hung on a dead listener")
+	}
+}
+
+// TestServeCutsRequestsThatOutliveTheGrace: a request still running when the
+// drain budget runs out is cut, and serve still reports a clean stop (nil), so
+// systemd does not record the unit as failed.
+func TestServeCutsRequestsThatOutliveTheGrace(t *testing.T) {
+	saved := shutdownGrace
+	shutdownGrace = 100 * time.Millisecond
+	t.Cleanup(func() { shutdownGrace = saved })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /stuck", func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serve(ctx, &http.Server{Handler: mux}, ln) }()
+	go func() {
+		if resp, err := http.Get("http://" + ln.Addr().String() + "/stuck"); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve returned %v, want nil after cutting a stuck request", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serve did not return after the grace period")
 	}
 }
