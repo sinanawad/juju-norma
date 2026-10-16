@@ -98,6 +98,10 @@ jobs:
     if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write       # OIDC token for build-provenance signing
+      attestations: write   # record the provenance attestation
     outputs:
       published: ${{ steps.release.outputs.published }}
     steps:
@@ -132,13 +136,26 @@ jobs:
       - name: Build workload binary (the norma-bin file resource)
         if: steps.recheck.outputs.rollback == 'false'
         timeout-minutes: 10
-        run: make build-workload VERSION=edge-$(git rev-parse --short HEAD)
+        run: make build-workload VERSION="edge-$(git rev-parse --short HEAD)"
       - name: Pack charm
         if: steps.recheck.outputs.rollback == 'false'
         timeout-minutes: 20
         # Committed libs only (no fetch-libs): CI's lib-check fails on drift, so
         # what ships is exactly what CI tested.
         run: charmcraft pack -v
+      - name: Attest build provenance
+        if: steps.recheck.outputs.rollback == 'false'
+        timeout-minutes: 5
+        # SLSA provenance for the charm and the norma binary (the norma-bin
+        # resource) exactly as uploaded.
+        # CharmHub serves the uploaded file unchanged, so a consumer can check it:
+        # `juju download juju-norma --channel latest/edge`, then
+        # `gh attestation verify juju-norma_*.charm --owner sinanawad`.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            juju-norma_amd64.charm
+            norma
       - name: Upload resource + charm, release to latest/edge
         id: release
         if: steps.recheck.outputs.rollback == 'false'
