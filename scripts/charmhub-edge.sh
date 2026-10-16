@@ -27,10 +27,11 @@
 #
 #   charmhub-edge.sh edge-carries <charm> <sha>
 #     For a release tag on <sha>: wait until latest/edge carries what <sha>
-#     ships (<sha> itself, or an older commit with no artifact changes since),
-#     then print the edge revision. Fails at once if edge holds newer or
-#     diverged bits (promoting them would ship something the tag does not
-#     describe), and after EDGE_WAIT_ATTEMPTS if the publish never lands.
+#     ships (<sha> itself, or an older or newer commit with no artifact changes
+#     between them), then print the edge revision. Fails at once if edge holds
+#     newer or diverged bits that differ (promoting them would ship something
+#     the tag does not describe), and after EDGE_WAIT_ATTEMPTS if the publish
+#     never lands.
 #
 #   charmhub-edge.sh revision <charm> <risk>
 #     Print the revision on latest/<risk>, or nothing.
@@ -153,9 +154,13 @@ edge_carries() {
           echo "${info%% *}"
           return 0
         fi
+      elif git merge-base --is-ancestor "$sha" "$base" && [[ -z "$(artifact_changes "$sha" "$base")" ]]; then
+        echo "latest/edge revision ${info%% *} (${base:0:7}, newer) ships the same bits as ${sha:0:7}" >&2
+        echo "${info%% *}"
+        return 0
       else
-        echo "latest/edge carries ${base:0:7}, which is not an ancestor of ${sha:0:7}:" \
-          "it is newer or diverged, so promoting it would ship bits this tag does not describe" >&2
+        echo "latest/edge carries ${base:0:7}, which is newer than or diverged from ${sha:0:7}" \
+          "with different artifacts, so promoting it would ship bits this tag does not describe" >&2
         exit 1
       fi
     fi

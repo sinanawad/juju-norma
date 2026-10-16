@@ -74,19 +74,25 @@ jobs:
             --yes
 
       # Edge can move between the check and the promote (a merge landing in the
-      # same minutes); fail loudly rather than ship an unverified revision.
+      # same minutes); fail loudly rather than ship an unverified revision. The
+      # public info API can lag a release, so poll before deciding.
       - name: Check latest/candidate holds the verified revision
+        timeout-minutes: 5
         env:
           EXPECTED: ${{ steps.edge.outputs.revision }}
         run: |
-          set -euo pipefail
-          actual=$(scripts/charmhub-edge.sh revision juju-norma candidate)
-          if [ "$actual" != "$EXPECTED" ]; then
-            echo "::error::latest/candidate holds revision ${actual:-<none>}, not the verified edge revision $EXPECTED;" \
-              "edge moved during the promote. Release revision $EXPECTED to latest/candidate by hand."
-            exit 1
-          fi
-          echo "latest/candidate holds revision $actual"
+          set -uo pipefail
+          for _ in $(seq 1 12); do
+            actual=$(scripts/charmhub-edge.sh revision juju-norma candidate) || actual=""
+            if [ "$actual" = "$EXPECTED" ]; then
+              echo "latest/candidate holds revision $actual"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::latest/candidate holds revision ${actual:-<none>}, not the verified edge revision $EXPECTED;" \
+            "edge may have moved during the promote. Release revision $EXPECTED to latest/candidate by hand."
+          exit 1
 
   build-artifacts:
     name: Pack principal + subordinate charms + norma binary
@@ -170,13 +176,17 @@ jobs:
           set -euo pipefail
           # Notes start at the previous v* tag: left to itself, GitHub picks the
           # starting point, and the rev<N> tags publish-edge creates are not it.
-          # A hyphenated tag (v0.2.0-rc1) is a pre-release.
+          # A hyphenated tag (v0.2.0-rc1) is a pre-release; a final release's
+          # notes skip pre-release tags, so they cover the whole cycle.
           args=(--title "${GITHUB_REF_NAME}" --verify-tag --generate-notes)
-          if prev=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_REF_NAME}^" 2>/dev/null); then
-            args+=(--notes-start-tag "$prev")
-          fi
+          describe=(--match 'v*')
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             args+=(--prerelease)
+          else
+            describe+=(--exclude 'v*-*')
+          fi
+          if prev=$(git describe --tags --abbrev=0 "${describe[@]}" "${GITHUB_REF_NAME}^" 2>/dev/null); then
+            args+=(--notes-start-tag "$prev")
           fi
           gh release create "${GITHUB_REF_NAME}" "${args[@]}" \
             juju-norma_amd64.charm \
