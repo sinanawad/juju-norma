@@ -1,0 +1,79 @@
+name: Refresh charm libraries
+
+# Weekly: fetch the vendored charm libraries (lib/charms/) from CharmHub and,
+# when upstream moved, open (or update) one pull request with the refresh.
+# Without this, upstream drift surfaced only as an unrelated PR failing CI's
+# Check Libraries job (which fails PRs on drift by design).
+#
+# A pull request opened with GITHUB_TOKEN does not trigger pull_request
+# workflows, so the job dispatches CI on the branch: its checks land on the
+# pull request's head commit, which is what main's required checks are judged
+# on. (If they ever do not count, close and reopen the pull request: a person
+# doing that triggers CI as usual.) Dispatch runs the full integration suite,
+# which a library change deserves. Merging stays manual: these are upstream
+# code changes, so review them.
+
+on:
+  schedule:
+    - cron: "17 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lib-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh charm libraries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write        # push the refresh branch
+      pull-requests: write   # open the pull request
+      actions: write         # dispatch CI on the branch
+    env:
+      BRANCH: chore/refresh-libs
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install charmcraft
+        timeout-minutes: 10
+        run: sudo snap install charmcraft --classic
+      - name: Fetch the libraries
+        # The same anonymous fetch CI's Check Libraries runs.
+        run: charmcraft fetch-lib
+      - name: Open or update the pull request
+        run: |
+          set -euo pipefail
+          num=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if git diff --quiet -- lib; then
+            echo "charm libraries are up to date"
+            if [ -n "$num" ]; then
+              gh pr close "$num" --delete-branch --comment "main already carries these libraries."
+            fi
+            exit 0
+          fi
+          git diff --stat -- lib
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git add lib
+          git commit -q -m "chore(libs): refresh charm libraries from CharmHub"
+          git push -q --force origin "$BRANCH"
+          body="Weekly refresh of the vendored charm libraries (\`charmcraft fetch-lib\`).
+
+          \`\`\`
+          $(git diff --stat HEAD~1 -- lib)
+          \`\`\`
+
+          CI runs as a dispatch on this branch (a pull request opened by GITHUB_TOKEN triggers no workflows): $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/ci.yaml?query=branch%3A$BRANCH. Review the upstream changes before merging."
+          if [ -n "$num" ]; then
+            gh pr edit "$num" --body "$body"
+          else
+            gh pr create --head "$BRANCH" --title "chore(libs): refresh charm libraries from CharmHub" --body "$body"
+          fi
+          gh workflow run ci.yaml --ref "$BRANCH"
