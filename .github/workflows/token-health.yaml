@@ -1,0 +1,149 @@
+name: CharmHub token health
+
+# Weekly check that the CharmHub token publishing relies on still works and is
+# not about to expire, so a dead token is found before the next shipping merge
+# needs it. CharmHub does not report a token's expiry, so it comes from the
+# CHARMHUB_TOKEN_EXPIRES repo variable (YYYY-MM-DD), set whenever the token is
+# re-exported.
+#
+# Rotating the token (charmcraft 4.4+ logs in through Ubuntu One, in a terminal:
+# email, password, 2FA; tokens from older charmcraft fail "Invalid macaroon"):
+#   charmcraft login --export=token.txt --charm=juju-norma --ttl=31536000 \
+#     --permission=package-manage-revisions --permission=package-manage-releases \
+#     --permission=package-view
+#   gh secret set CHARMHUB_TOKEN_PUBLISH < token.txt && rm token.txt
+#   gh variable set CHARMHUB_TOKEN_EXPIRES --body "$(date -u -d '+365 days' +%F)"
+#   gh workflow run token-health.yaml   # confirm
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: token-health
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check the CharmHub token
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false   # .github/token-problems.jq
+      - name: Install charmcraft
+        timeout-minutes: 10
+        run: sudo snap install charmcraft --classic
+      - name: Token authenticates and may publish juju-norma
+        timeout-minutes: 3
+        env:
+          CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN_PUBLISH }}
+          CHARM: juju-norma
+        run: |
+          set -uo pipefail
+          info=""
+          for attempt in 1 2 3; do
+            if info=$(charmcraft whoami --format json 2>/tmp/whoami.err); then break; fi
+            info=""
+            echo "charmcraft whoami attempt $attempt failed: $(tail -1 /tmp/whoami.err)" >&2
+            sleep 15
+          done
+          if [ -z "$info" ]; then
+            echo "::error::CHARMHUB_TOKEN_PUBLISH does not authenticate:"
+            cat /tmp/whoami.err
+            exit 1
+          fi
+          # No secret material: account name, permissions and restrictions only.
+          echo "$info" | jq '{username, permissions, charms, channels}'
+          # package-manage implies every package-manage-* permission.
+          if ! problems=$(echo "$info" | jq -r --arg charm "$CHARM" -f .github/token-problems.jq); then
+            echo "::error::unexpected charmcraft whoami output"
+            exit 1
+          fi
+          if [ -n "$problems" ]; then
+            echo "::error::CHARMHUB_TOKEN_PUBLISH cannot publish $CHARM:"
+            echo "$problems"
+            exit 1
+          fi
+          echo "CHARMHUB_TOKEN_PUBLISH authenticates and may publish $CHARM"
+      - name: Token is not about to expire
+        env:
+          EXPIRES: ${{ vars.CHARMHUB_TOKEN_EXPIRES }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPIRES" ]; then
+            echo "::error::set the CHARMHUB_TOKEN_EXPIRES repo variable (YYYY-MM-DD)"
+            exit 1
+          fi
+          if ! expiry=$(date -u -d "$EXPIRES" +%s); then
+            echo "::error::CHARMHUB_TOKEN_EXPIRES='$EXPIRES' is not a date"
+            exit 1
+          fi
+          days=$(( (expiry - $(date -u +%s)) / 86400 ))
+          echo "CHARMHUB_TOKEN_PUBLISH expires $EXPIRES ($days days)"
+          if [ "$days" -lt 30 ]; then
+            echo "::error::CHARMHUB_TOKEN_PUBLISH expires in $days days ($EXPIRES): re-export it now"
+            exit 1
+          fi
+
+  # Deliver publish failures. A CharmHub token that dies or expires breaks publishing
+  # silently until the next shipping merge, and the token outage of 2026-08-26 ->
+  # 2026-10-08 went unnoticed for six weeks. Deliberately quiet, like the nightly
+  # verdict: ONE reused issue per red streak (per workflow and ref), labelled
+  # publish-failure, its body rewritten with the latest failing run, closed
+  # automatically on the next healthy run. A cancelled check (a job timeout, or a
+  # manual cancel) is reported too.
+  notify:
+    name: Publish failure issue
+    needs: [check]
+    if: >-
+      always() &&
+      (!contains(needs.*.result, 'skipped'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Reporting must never change the publish outcome: without this, a GitHub API
+    # error here would turn a green run red (and could stop a chained workflow).
+    continue-on-error: true
+    permissions:
+      issues: write
+    steps:
+      - name: Open, update or close the publish-failure issue
+        # A STEP timeout is recorded as a failure, which continue-on-error
+        # absorbs; a job timeout would be a cancel, which it does not.
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && 'failure' || 'success' }}
+          TITLE: ${{ github.workflow }}${{ github.ref_name != 'main' && format(' ({0})', github.ref_name) || '' }} is failing
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HINT: >-
+            Re-export CHARMHUB_TOKEN_PUBLISH and update the CHARMHUB_TOKEN_EXPIRES repo
+            variable: the steps are in the header of .github/workflows/token-health.yaml.
+        run: |
+          set -euo pipefail
+          # A label, not a title search: the search index lags, so two quick
+          # failures could each open an issue, and only one would ever be closed.
+          gh label create publish-failure --color B60205 \
+            --description "Unattended publishing is failing" --force >/dev/null
+          # shellcheck disable=SC2016  # $ENV.TITLE is a jq variable, not shell
+          num=$(gh api "repos/${GH_REPO}/issues?state=open&labels=publish-failure&per_page=100" \
+                  --jq 'map(select(.title == $ENV.TITLE)) | .[0].number // empty')
+          if [ "$RESULT" = failure ]; then
+            body="Latest failing run ($(date -u +%F)): $RUN_URL
+
+          This issue stays open, and is updated, for as long as publishing keeps failing; it closes itself on the next successful run.
+          $HINT"
+            if [ -n "$num" ]; then
+              gh issue edit "$num" --body "$body"
+            else
+              gh issue create --title "$TITLE" --label publish-failure --body "$body"
+            fi
+          elif [ -n "$num" ]; then
+            gh issue close "$num" --comment "Recovered: $RUN_URL"
+          fi
