@@ -1,7 +1,8 @@
 name: Release (tag)
 
 # On a git tag `v*`:
-#   1. Promote the revision currently on latest/edge -> latest/candidate. The
+#   1. Wait until latest/edge carries the tagged commit (scripts/charmhub-edge.sh
+#      edge-carries), then promote it -> latest/candidate and check it landed. The
 #      promotion preserves the charm revision number and its attached norma-bin
 #      resource, so the exact bits validated on edge flow to candidate.
 #   2. Pack the PRINCIPAL + SUBORDINATE charms and build the norma binary, all
@@ -25,8 +26,27 @@ jobs:
   promote-to-candidate:
     name: Promote latest/edge -> latest/candidate
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Most of this is waiting for publish-edge (CI, then the publish itself)
+    # when the tag is pushed right after the merge it names.
+    timeout-minutes: 60
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # edge-carries maps edge's version to a commit
+          persist-credentials: false
+
+      # `promote` takes whatever edge holds at that moment. Without this check a
+      # tag pushed before its commit's publish finished (or on an older commit)
+      # put bits on candidate that the tag does not describe.
+      - name: Wait for latest/edge to carry the tagged commit
+        id: edge
+        env:
+          EDGE_WAIT_ATTEMPTS: "180"   # 15 s apart: up to 45 min
+        run: |
+          set -euo pipefail
+          rev=$(scripts/charmhub-edge.sh edge-carries juju-norma "$GITHUB_SHA")
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
       - name: Install charmcraft
         run: sudo snap install charmcraft --classic
       - name: charmcraft promote edge -> candidate
@@ -53,6 +73,27 @@ jobs:
             --to-channel=latest/candidate \
             --yes
 
+      # Edge can move between the check and the promote (a merge landing in the
+      # same minutes); fail loudly rather than ship an unverified revision. The
+      # public info API can lag a release, so poll before deciding.
+      - name: Check latest/candidate holds the verified revision
+        timeout-minutes: 5
+        env:
+          EXPECTED: ${{ steps.edge.outputs.revision }}
+        run: |
+          set -uo pipefail
+          for _ in $(seq 1 12); do
+            actual=$(scripts/charmhub-edge.sh revision juju-norma candidate) || actual=""
+            if [ "$actual" = "$EXPECTED" ]; then
+              echo "latest/candidate holds revision $actual"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::latest/candidate holds revision ${actual:-<none>}, not the verified edge revision $EXPECTED;" \
+            "edge may have moved during the promote. Release revision $EXPECTED to latest/candidate by hand."
+          exit 1
+
   build-artifacts:
     name: Pack principal + subordinate charms + norma binary
     runs-on: ubuntu-24.04
@@ -70,7 +111,7 @@ jobs:
       - name: Install charmcraft
         run: sudo snap install charmcraft --classic
       - name: Build norma binary (stamped with the tag)
-        run: make build-workload VERSION=${GITHUB_REF_NAME}
+        run: make build-workload VERSION="${GITHUB_REF_NAME}"
       - name: Pack principal charm (committed libs, as tested by CI)
         run: charmcraft pack -v
       - name: Pack subordinate charm
@@ -81,8 +122,7 @@ jobs:
           # The principal packs at the repo root as juju-norma_amd64.charm (single
           # amd64 platform); the subordinate packs under subordinate/.
           test -f juju-norma_amd64.charm
-          sub=$(ls subordinate/juju-norma-subordinate_*.charm | grep '_amd64' | head -1)
-          mv "$sub" juju-norma-subordinate_amd64.charm
+          mv subordinate/juju-norma-subordinate_*amd64*.charm juju-norma-subordinate_amd64.charm
           mv norma norma-linux-amd64
       - name: Upload release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -133,9 +173,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
+          set -euo pipefail
+          # Notes start at the previous v* tag: left to itself, GitHub picks the
+          # starting point, and the rev<N> tags publish-edge creates are not it.
+          # A hyphenated tag (v0.2.0-rc1) is a pre-release; a final release's
+          # notes skip pre-release tags, so they cover the whole cycle.
+          args=(--title "${GITHUB_REF_NAME}" --verify-tag --generate-notes)
+          describe=(--match 'v*')
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            args+=(--prerelease)
+          else
+            describe+=(--exclude 'v*-*')
+          fi
+          if prev=$(git describe --tags --abbrev=0 "${describe[@]}" "${GITHUB_REF_NAME}^" 2>/dev/null); then
+            args+=(--notes-start-tag "$prev")
+          fi
+          gh release create "${GITHUB_REF_NAME}" "${args[@]}" \
             juju-norma_amd64.charm \
             juju-norma-subordinate_amd64.charm \
             norma-linux-amd64 \

@@ -41,10 +41,13 @@ jobs:
       - name: charmcraft promote
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN_PUBLISH }}
+          # Through env, never interpolated into the script.
+          FROM_CHANNEL: ${{ inputs.from_channel }}
+          TO_CHANNEL: ${{ inputs.to_channel }}
         run: |
           set -uo pipefail
           # Refuse same-channel promotions — likely a misclick.
-          if [[ "${{ inputs.from_channel }}" == "${{ inputs.to_channel }}" ]]; then
+          if [[ "$FROM_CHANNEL" == "$TO_CHANNEL" ]]; then
             echo "ERROR: from_channel and to_channel must differ"
             exit 1
           fi
@@ -62,6 +65,6 @@ jobs:
           }
           cc promote \
             --name=juju-norma \
-            --from-channel=${{ inputs.from_channel }} \
-            --to-channel=${{ inputs.to_channel }} \
+            --from-channel="$FROM_CHANNEL" \
+            --to-channel="$TO_CHANNEL" \
             --yes

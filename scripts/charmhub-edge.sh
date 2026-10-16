@@ -25,6 +25,17 @@
 #     publishing <sha> would roll edge back (e.g. re-running an old run after
 #     newer commits shipped); "false" otherwise, including when edge is <sha>.
 #
+#   charmhub-edge.sh edge-carries <charm> <sha>
+#     For a release tag on <sha>: wait until latest/edge carries what <sha>
+#     ships (<sha> itself, or an older or newer commit with no artifact changes
+#     between them), then print the edge revision. Fails at once if edge holds
+#     newer or diverged bits that differ (promoting them would ship something
+#     the tag does not describe), and after EDGE_WAIT_ATTEMPTS if the publish
+#     never lands.
+#
+#   charmhub-edge.sh revision <charm> <risk>
+#     Print the revision on latest/<risk>, or nothing.
+#
 #   charmhub-edge.sh tag-revision <charm> <sha>
 #     Wait for latest/edge to carry <sha>, then tag <sha> `rev<N>` (lightweight,
 #     through the GitHub API: needs GH_TOKEN with contents: write, and GH_REPO).
@@ -32,7 +43,8 @@
 #     DRY_RUN=1 looks everything up but creates nothing.
 #
 # EDGE_VERSION (and EDGE_REVISION) override the CharmHub lookup for dry runs;
-# EDGE_WAIT_ATTEMPTS (default 20, 15 s apart) bounds tag-revision's wait.
+# EDGE_WAIT_ATTEMPTS (default 20, 15 s apart) bounds the edge-carries and
+# tag-revision waits.
 # Run inside a full clone (fetch-depth: 0).
 
 set -euo pipefail
@@ -44,16 +56,18 @@ NON_ARTIFACT=(
   'charmcraft-sudoer.yaml'  # k8s: the sudoer variant ships only in GitHub Releases
 )
 
-# "<revision> <version>" of latest/edge, or nothing.
+# "<revision> <version>" of latest/<risk> (default edge), or nothing.
 edge_info() {
-  if [[ -n "${EDGE_VERSION+set}" ]]; then
+  local risk="${2:-edge}"
+  if [[ "$risk" == edge && -n "${EDGE_VERSION+set}" ]]; then
     echo "${EDGE_REVISION-} ${EDGE_VERSION}"
     return
   fi
   curl -fsS --retry 3 --connect-timeout 10 --max-time 30 \
     "https://api.charmhub.io/v2/charms/info/$1?fields=channel-map.revision.revision,channel-map.revision.version" |
-    jq -r '[.["channel-map"][] | select(.channel.track == "latest" and .channel.risk == "edge")
-            | "\(.revision.revision) \(.revision.version)"][0] // empty'
+    jq -r --arg risk "$risk" \
+      '[.["channel-map"][] | select(.channel.track == "latest" and .channel.risk == $risk)
+        | "\(.revision.revision) \(.revision.version)"][0] // empty'
 }
 
 # The full commit a recorded version maps to, or nothing. Only describe output
@@ -71,6 +85,11 @@ version_commit() {
     return 0
   fi
   git rev-parse --verify --quiet "${ref}^{commit}" || true
+}
+
+# Artifact paths that differ between two commits (empty: same shipped bits).
+artifact_changes() {
+  git diff --name-only "$1" "$2" -- . "${NON_ARTIFACT[@]/#/:(exclude)}"
 }
 
 needs_publish() {
@@ -95,7 +114,7 @@ needs_publish() {
   if ! git merge-base --is-ancestor "$base" "$sha"; then
     publish "edge commit ${base:0:7} is not an ancestor of ${sha:0:7} (history diverged)"
   fi
-  changed="$(git diff --name-only "$base" "$sha" -- . "${NON_ARTIFACT[@]/#/:(exclude)}")"
+  changed="$(artifact_changes "$base" "$sha")"
   if [[ -n "$changed" ]]; then
     publish "artifact paths changed since edge commit ${base:0:7}: $(echo "$changed" | head -5 | paste -sd' ')"
   fi
@@ -113,6 +132,43 @@ would_roll_back() {
   else
     echo false
   fi
+}
+
+edge_carries() {
+  local charm="$1" sha info version base changed
+  sha="$(git rev-parse --verify "$2^{commit}")"
+  for _ in $(seq 1 "${EDGE_WAIT_ATTEMPTS:-20}"); do
+    info="$(edge_info "$charm")" || info=""
+    version="${info#* }"
+    base="$(version_commit "$version")"
+    if [[ -n "$base" && "${info%% *}" =~ ^[0-9]+$ ]]; then
+      if [[ "$base" == "$sha" ]]; then
+        echo "latest/edge revision ${info%% *} carries ${sha:0:7}" >&2
+        echo "${info%% *}"
+        return 0
+      fi
+      if git merge-base --is-ancestor "$base" "$sha"; then
+        changed="$(artifact_changes "$base" "$sha")"
+        if [[ -z "$changed" ]]; then
+          echo "latest/edge revision ${info%% *} (${base:0:7}) ships the same bits as ${sha:0:7}" >&2
+          echo "${info%% *}"
+          return 0
+        fi
+      elif git merge-base --is-ancestor "$sha" "$base" && [[ -z "$(artifact_changes "$sha" "$base")" ]]; then
+        echo "latest/edge revision ${info%% *} (${base:0:7}, newer) ships the same bits as ${sha:0:7}" >&2
+        echo "${info%% *}"
+        return 0
+      else
+        echo "latest/edge carries ${base:0:7}, which is newer than or diverged from ${sha:0:7}" \
+          "with different artifacts, so promoting it would ship bits this tag does not describe" >&2
+        exit 1
+      fi
+    fi
+    echo "latest/edge shows '${info:-<nothing>}', not what ${sha:0:7} ships yet; retrying in 15s" >&2
+    sleep 15
+  done
+  echo "latest/edge never carried ${sha:0:7}; is its publish-edge run green?" >&2
+  exit 1
 }
 
 tag_revision() {
@@ -158,9 +214,15 @@ tag_revision() {
 case "${1:-}" in
   needs-publish) needs_publish "${@:2}" ;;
   would-roll-back) would_roll_back "${@:2}" ;;
+  edge-carries) edge_carries "${@:2}" ;;
+  revision)
+    info="$(edge_info "$2" "$3")"
+    if [[ -n "$info" ]]; then echo "${info%% *}"; fi
+    ;;
   tag-revision) tag_revision "${@:2}" ;;
   *)
-    echo "usage: $0 needs-publish|would-roll-back|tag-revision <charm> <sha>" >&2
+    echo "usage: $0 needs-publish|would-roll-back|edge-carries|tag-revision <charm> <sha>" >&2
+    echo "       $0 revision <charm> <risk>" >&2
     exit 2
     ;;
 esac
