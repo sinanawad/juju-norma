@@ -33,6 +33,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false   # .github/token-problems.jq
       - name: Install charmcraft
         timeout-minutes: 10
         run: sudo snap install charmcraft --classic
@@ -73,7 +76,11 @@ jobs:
           EXPIRES: ${{ vars.CHARMHUB_TOKEN_EXPIRES }}
         run: |
           set -euo pipefail
-          if ! expiry=$(date -u -d "${EXPIRES:?set the CHARMHUB_TOKEN_EXPIRES repo variable (YYYY-MM-DD)}" +%s); then
+          if [ -z "$EXPIRES" ]; then
+            echo "::error::set the CHARMHUB_TOKEN_EXPIRES repo variable (YYYY-MM-DD)"
+            exit 1
+          fi
+          if ! expiry=$(date -u -d "$EXPIRES" +%s); then
             echo "::error::CHARMHUB_TOKEN_EXPIRES='$EXPIRES' is not a date"
             exit 1
           fi
@@ -89,9 +96,8 @@ jobs:
   # 2026-10-08 went unnoticed for six weeks. Deliberately quiet, like the nightly
   # verdict: ONE reused issue per red streak (per workflow and ref), labelled
   # publish-failure, its body rewritten with the latest failing run, closed
-  # automatically on the next healthy run. Runs that never pass the gate (CI red,
-  # nightly, fork guard) stay silent. A cancelled check (a job timeout, or a manual
-  # cancel) is reported too.
+  # automatically on the next healthy run. A cancelled check (a job timeout, or a
+  # manual cancel) is reported too.
   notify:
     name: Publish failure issue
     needs: [check]
