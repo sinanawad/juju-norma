@@ -32,7 +32,7 @@ release-chain obligation.
 
 ## One-time prerequisite
 
-- **`CHARMHUB_TOKEN` must carry `package-manage`** (promote/release need it; a
+- **`CHARMHUB_TOKEN_PUBLISH` must carry `package-manage`** (promote/release need it; a
   lib-check-only token is `package-view`). `publish-edge` already releases to edge,
   so it is almost certainly fine — confirm with `charmcraft whoami`.
 
@@ -40,15 +40,16 @@ release-chain obligation.
 
 ## Cutting a release
 
-1. **Land everything on `main`** and wait for its `publish-edge` run to finish —
-   so `latest/edge` holds the exact revision you intend to release.
+1. **Land everything on `main`.** No need to wait for its `publish-edge` run:
+   `release-tag` waits (up to 45 min) for `latest/edge` to carry the tagged commit.
 2. **Tag `main`'s HEAD** (the discipline that keeps it simple — see below):
    ```bash
    git checkout main && git pull
    git tag -a v0.1.0 -m "v0.1.0"
    git push origin v0.1.0
    ```
-   `release-tag.yaml` then promotes `latest/edge → latest/candidate`, builds the
+   `release-tag.yaml` then waits for `latest/edge` to carry the tag, promotes
+   `latest/edge → latest/candidate`, checks candidate got that revision, builds the
    subordinate charm + `norma` binary from the tag, and cuts a SLSA-attested
    GitHub Release (principal + subordinate `.charm`, the binary, `SHA256SUMS`).
 3. **Vet `latest/candidate`** — deploy from it, run the smoke acceptance:
@@ -60,14 +61,21 @@ release-chain obligation.
    channel" → Run workflow → `latest/candidate` → `latest/stable`*. Consumers
    deploying by name then pick it up automatically.
 
-## Tag-HEAD discipline (why there is no SHA gate)
+## Tag-HEAD discipline (and the edge check that backs it)
 
-`release-tag` promotes **whatever is currently on `latest/edge`**, which is
-whatever `main`'s last merge published. So **tag `main`'s HEAD after its edge
-publish completes** and the released bits are exactly the tagged commit — no
-revision lookup, no SHA verification. Tagging an *older* commit (while `main` has
-advanced) would ship the newer edge bits instead; don't. This is the same trust
-model Juju CI uses for `juju-qa-*` charms — simple by design.
+`release-tag` promotes `latest/edge`, so it first checks that edge ships what the
+tag describes: `scripts/charmhub-edge.sh edge-carries` maps edge's recorded
+version back to a commit and accepts the tagged commit itself, or an older one
+with no artifact changes since (a docs-only tag). Otherwise:
+
+- **edge is behind** (the tag's publish is still running) — it waits, up to 45 min;
+- **edge is ahead or diverged** (an older commit was tagged while `main` moved
+  on) — it fails at once, because promoting would ship newer bits than the tag.
+
+After the promote it checks `latest/candidate` holds exactly the verified
+revision; a merge that publishes during those seconds fails the job instead of
+shipping unverified bits. So still **tag `main`'s HEAD**; the check turns a
+mistake into a red run instead of a wrong release.
 
 ## Partial-failure recovery
 
@@ -84,7 +92,9 @@ model Juju CI uses for `juju-qa-*` charms — simple by design.
 ## Release notes
 
 `release-tag` uses `gh release create --generate-notes` (auto changelog from merged
-PRs). For a human-facing summary, edit the published release and add a **"Notable
+PRs), starting at the previous `v*` tag (`--notes-start-tag`; the `rev<N>` tags
+`publish-edge` creates are ignored). A hyphenated tag (`v0.2.0-rc1`) is published
+as a pre-release. For a human-facing summary, edit the published release and add a **"Notable
 changes"** section at the top — the line a downstream pin-bump references.
 
 ## Dry run
