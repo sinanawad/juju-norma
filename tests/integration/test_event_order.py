@@ -13,6 +13,7 @@ ledger and never touches the shared session app. Full-suite only (real machines)
 
 import json
 import time
+from collections.abc import Callable
 
 import jubilant
 import pytest
@@ -34,7 +35,13 @@ def _first(events: list[dict], name: str) -> int | None:
     return next((i for i, e in enumerate(events) if e.get("event_name") == name), None)
 
 
-def _wait_recorded(juju: jubilant.Juju, unit: str, required: set[str], timeout: float = 300):
+def _wait_recorded(
+    juju: jubilant.Juju,
+    unit: str,
+    required: set[str],
+    timeout: float = 300,
+    match: Callable[[dict], bool] | None = None,
+) -> list[dict]:
     """Poll the ledger until every event in ``required`` has been recorded.
 
     all_active does NOT imply the full startup sequence is in the ledger: the
@@ -42,11 +49,17 @@ def _wait_recorded(juju: jubilant.Juju, unit: str, required: set[str], timeout: 
     can report active after install alone — before config-changed/start fire and
     are logged. (The 4.0/edge leg's timing exposed this as a flake.) So wait for the
     events to actually appear before asserting their order.
+
+    The same "already active, so wait returns at once" case applies to
+    post-integrate relation hooks: both units can already be active when integrate
+    returns, so all_active does not wait for relation-joined to be dispatched.
+    ``match``, when given, counts only ledger entries for which it is true.
     """
     deadline = time.monotonic() + timeout
     events = _ledger(juju, unit)
     while time.monotonic() < deadline:
-        if required <= {e.get("event_name") for e in events}:
+        seen = {e.get("event_name") for e in events if match is None or match(e)}
+        if required <= seen:
             return events
         time.sleep(10)
         events = _ledger(juju, unit)
@@ -115,7 +128,14 @@ class TestEventOrder:
         juju.integrate(f"{PROV}:calibration-provider", f"{REQ}:calibration-requirer")
         juju.wait(jubilant.all_active, timeout=300)
 
-        events = _ledger(juju, f"{PROV}/leader")
+        # Both units were active before integrate, so all_active returns at once;
+        # wait for the relation hooks themselves to be logged before asserting order.
+        events = _wait_recorded(
+            juju,
+            f"{PROV}/leader",
+            {"relation-created", "relation-joined"},
+            match=lambda e: e.get("extra", {}).get("remote-app") == REQ,
+        )
         order = [
             e.get("event_name")
             for e in events
