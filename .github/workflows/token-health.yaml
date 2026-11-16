@@ -32,14 +32,31 @@ jobs:
     name: Check the CharmHub token
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      failure_hint: ${{ steps.classify.outputs.failure_hint }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false   # .github/token-problems.jq
       - name: Install charmcraft
+        id: install
         timeout-minutes: 10
-        run: sudo snap install charmcraft --classic
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if sudo snap install charmcraft --classic 2>/tmp/snap-install.err; then
+              cat /tmp/snap-install.err >&2 || true
+              exit 0
+            fi
+            echo "snap install charmcraft attempt $attempt failed: $(tail -1 /tmp/snap-install.err)" >&2
+            cat /tmp/snap-install.err >&2
+            sleep 15
+          done
+          echo "::error::snap install charmcraft failed after 3 attempts (Snap Store or runner infrastructure)"
+          cat /tmp/snap-install.err
+          exit 1
       - name: Token authenticates and may publish juju-norma
+        id: auth
         timeout-minutes: 3
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMHUB_TOKEN_PUBLISH }}
@@ -72,6 +89,7 @@ jobs:
           fi
           echo "CHARMHUB_TOKEN_PUBLISH authenticates and may publish $CHARM"
       - name: Token is not about to expire
+        id: expiry
         env:
           EXPIRES: ${{ vars.CHARMHUB_TOKEN_EXPIRES }}
         run: |
@@ -89,6 +107,43 @@ jobs:
           if [ "$days" -lt 30 ]; then
             echo "::error::CHARMHUB_TOKEN_PUBLISH expires in $days days ($EXPIRES): re-export it now"
             exit 1
+          fi
+
+      - name: Classify a check failure
+        id: classify
+        if: always()
+        env:
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          AUTH_OUTCOME: ${{ steps.auth.outcome }}
+          EXPIRY_OUTCOME: ${{ steps.expiry.outcome }}
+          TOKEN_HINT: >-
+            Re-export CHARMHUB_TOKEN_PUBLISH and update the CHARMHUB_TOKEN_EXPIRES repo
+            variable: the steps are in the header of .github/workflows/token-health.yaml.
+          INFRA_HINT: >-
+            This failure looks like a Snap Store or GitHub runner infrastructure problem
+            (for example a snap install timeout), not a bad or expired CharmHub token.
+            Re-run the workflow later; do not re-export the token unless a later run
+            fails a token step.
+        run: |
+          set -euo pipefail
+          if [ "$INSTALL_OUTCOME" = success ] && \
+             [ "$AUTH_OUTCOME" = success ] && \
+             [ "$EXPIRY_OUTCOME" = success ]; then
+            hint=""
+          elif [ "$INSTALL_OUTCOME" = success ] && \
+               { [ "$AUTH_OUTCOME" = failure ] || [ "$EXPIRY_OUTCOME" = failure ]; }; then
+            hint="$TOKEN_HINT"
+          else
+            hint="$INFRA_HINT"
+          fi
+          if [ -z "$hint" ]; then
+            echo "failure_hint=" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "failure_hint<<EOF"
+              printf '%s\n' "$hint"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
 
   # Deliver publish failures. A CharmHub token that dies or expires breaks publishing
@@ -122,9 +177,7 @@ jobs:
           RESULT: ${{ (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && 'failure' || 'success' }}
           TITLE: ${{ github.workflow }}${{ github.ref_name != 'main' && format(' ({0})', github.ref_name) || '' }} is failing
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          HINT: >-
-            Re-export CHARMHUB_TOKEN_PUBLISH and update the CHARMHUB_TOKEN_EXPIRES repo
-            variable: the steps are in the header of .github/workflows/token-health.yaml.
+          HINT: ${{ needs.check.outputs.failure_hint }}
         run: |
           set -euo pipefail
           # A label, not a title search: the search index lags, so two quick
@@ -135,6 +188,9 @@ jobs:
           num=$(gh api "repos/${GH_REPO}/issues?state=open&labels=publish-failure&per_page=100" \
                   --jq 'map(select(.title == $ENV.TITLE)) | .[0].number // empty')
           if [ "$RESULT" = failure ]; then
+            if [ -z "$HINT" ]; then
+              HINT="This failure looks like a Snap Store or GitHub runner infrastructure problem (for example a snap install timeout), not a bad or expired CharmHub token. Re-run the workflow later; do not re-export the token unless a later run fails a token step."
+            fi
             body="Latest failing run ($(date -u +%F)): $RUN_URL
 
           This issue stays open, and is updated, for as long as publishing keeps failing; it closes itself on the next successful run.
