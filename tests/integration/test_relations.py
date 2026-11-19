@@ -17,6 +17,7 @@ import jubilant
 import pytest
 
 from .conftest import RESOURCE_NAME
+from .diagnostics import wait
 
 PROV = "norma-prov"
 REQ = "norma-req"
@@ -32,10 +33,10 @@ class TestCalibrationSelfRelate:
         resources = {RESOURCE_NAME: str(workload_bin)}
         juju.deploy(str(charm_path), app=PROV, resources=resources)
         juju.deploy(str(charm_path), app=REQ, resources=resources)
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         juju.integrate(f"{PROV}:calibration-provider", f"{REQ}:calibration-requirer")
-        juju.wait(jubilant.all_active, timeout=300)
+        wait(juju, jubilant.all_active, timeout=300)
 
         task = juju.run(
             f"{PROV}/leader", "get-relation-data", params={"endpoint": "calibration-provider"}

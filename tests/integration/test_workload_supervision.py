@@ -14,6 +14,7 @@ import time
 import jubilant
 
 from .conftest import APP
+from .diagnostics import wait
 
 
 def _scrape_norma_healthy(juju: jubilant.Juju) -> str:
@@ -65,7 +66,7 @@ class TestWorkloadSupervision:
             f"systemd did not auto-restart the workload (NRestarts {before} -> {after})"
         )
         # The unit recovers to active (workload reachable again).
-        juju.wait(jubilant.all_active, timeout=120)
+        wait(juju, jubilant.all_active, timeout=120)
 
     def test_set_health_fails_then_recovers_self_probe(self, juju: jubilant.Juju):
         """F5: an externally-unhealthy workload fails the --check self-probe; the

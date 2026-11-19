@@ -15,6 +15,7 @@ import jubilant
 import pytest
 
 from .conftest import RESOURCE_NAME
+from .diagnostics import wait
 
 PROV = "norma-sprov"
 REQ = "norma-sreq"
@@ -29,10 +30,10 @@ class TestCrossAppSecret:
         res = {RESOURCE_NAME: str(workload_bin)}
         juju.deploy(str(charm_path), app=PROV, resources=res)
         juju.deploy(str(charm_path), app=REQ, resources=res)
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         juju.integrate(f"{PROV}:calibration-provider", f"{REQ}:calibration-requirer")
-        juju.wait(jubilant.all_active, timeout=300)
+        wait(juju, jubilant.all_active, timeout=300)
 
         # The provider grants + propagates the id on a reconcile after the relation
         # forms; poll the requirer reading it (grant + databag propagation settle).

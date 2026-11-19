@@ -6,6 +6,7 @@ import jubilant
 import pytest
 
 from .conftest import APP
+from .diagnostics import wait
 
 # The defer-gate exercise is a single config change on the shared deployment —
 # container-safe and fast; part of the per-PR smoke acceptance subset.
@@ -32,7 +33,7 @@ def _arm_and_defer_config(juju: jubilant.Juju, prefix: str) -> list[dict]:
     for attempt in range(6):
         juju.run(f"{APP}/leader", "test-defer", params={"arm": True})
         juju.config(APP, {"calibration-string": f"{prefix}-{attempt}"})
-        juju.wait(jubilant.all_active, timeout=180)
+        wait(juju, jubilant.all_active, timeout=180)
         events = _config_changed_ledger(juju)
         if any(e.get("extra", {}).get("deferred") == "true" for e in events):
             return events
@@ -47,7 +48,7 @@ class TestDefer:
             "expected a deferred config-changed entry in the ledger"
         )
         juju.config(APP, reset=["calibration-string"])
-        juju.wait(jubilant.all_active, timeout=120)
+        wait(juju, jubilant.all_active, timeout=120)
 
     def test_deferred_event_is_reemitted(self, juju: jubilant.Juju):
         """F18: a deferred event is RE-EMITTED later, tagged re-emitted:true AFTER the
@@ -58,7 +59,7 @@ class TestDefer:
         # One more config-changed triggers ops to re-emit the deferred one (at the
         # start of the next dispatch) before reconciling the new value.
         juju.config(APP, {"calibration-string": "reemit-trigger"})
-        juju.wait(jubilant.all_active, timeout=180)
+        wait(juju, jubilant.all_active, timeout=180)
 
         events = _config_changed_ledger(juju)
 
@@ -73,4 +74,4 @@ class TestDefer:
         assert deferred_idx < reemit_idx, f"re-emission not after the deferral: {events}"
 
         juju.config(APP, reset=["calibration-string"])
-        juju.wait(jubilant.all_active, timeout=120)
+        wait(juju, jubilant.all_active, timeout=120)

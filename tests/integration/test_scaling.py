@@ -11,6 +11,7 @@ import jubilant
 import pytest
 
 from .conftest import APP
+from .diagnostics import wait
 
 
 def _unit_count(juju: jubilant.Juju) -> int:
@@ -34,7 +35,8 @@ class TestScaling:
         # Wait for the new machine(s) to provision + units to go active. With no
         # error predicate, wait() tolerates the transient waiting/maintenance a
         # new unit passes through (incl. slow LXD boots under load).
-        juju.wait(
+        wait(
+            juju,
             lambda s: len(s.apps[APP].units) == self.TARGET and jubilant.all_active(s),
             timeout=900,
         )
@@ -65,7 +67,8 @@ class TestScaling:
         names = sorted(juju.status().apps[APP].units, key=lambda n: int(n.split("/")[1]))
         for name in names[1:]:
             juju.cli("remove-unit", name, "--no-prompt")
-        juju.wait(
+        wait(
+            juju,
             lambda s: len(s.apps[APP].units) == 1 and jubilant.all_active(s),
             timeout=600,
         )

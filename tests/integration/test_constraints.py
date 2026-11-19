@@ -27,6 +27,7 @@ import jubilant
 import pytest
 
 from .conftest import APP, RESOURCE_NAME
+from .diagnostics import wait
 
 # Dedicated, short-lived app so constraints are exercised at DEPLOY (where the
 # provider applies them to the new machine) without disturbing the session app.
@@ -91,7 +92,8 @@ class TestConstraintsHonored:
             constraints,
             include_model=True,
         )
-        juju.wait(
+        wait(
+            juju,
             lambda s: (
                 CSTR_APP in s.apps and len(s.apps[CSTR_APP].units) >= 1 and jubilant.all_active(s)
             ),
@@ -148,7 +150,8 @@ class TestRootDiskConstraint:
         # where it doesn't, the machine never goes active, so cap the wait (don't
         # burn the full provision timeout on the expected-fail path) → TimeoutError
         # → xfail (strict=False).
-        juju.wait(
+        wait(
+            juju,
             lambda s: app in s.apps and len(s.apps[app].units) >= 1 and jubilant.all_active(s),
             timeout=420,
         )

@@ -3,6 +3,7 @@
 import jubilant
 
 from .conftest import APP
+from .diagnostics import wait
 
 
 class TestUpgrade:
@@ -22,7 +23,7 @@ class TestUpgrade:
             f"norma-bin={workload_bin}",
             include_model=True,
         )
-        juju.wait(jubilant.all_active, timeout=300)
+        wait(juju, jubilant.all_active, timeout=300)
 
         after = juju.run(
             f"{APP}/leader", "get-event-log", params={"event-filter": "upgrade-charm"}
