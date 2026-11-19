@@ -20,7 +20,9 @@ import yaml
 logger = logging.getLogger(__name__)
 
 COMMAND_TIMEOUT_SECONDS = 20
-_DEBUG_LOG_LINES = 2000
+# Juju 4.0 rejects ``--no-tail`` together with ``--lines`` (debuglog.go Init).
+# ``--limit N`` prints the N most recent lines and exits; it does not replay.
+_DEBUG_LOG_LIMIT = "2000"
 _REMOTE_TAIL_LINES = "300"
 _STATUS_NAME = "juju-status.yaml"
 
@@ -133,9 +135,8 @@ def _collect(juju, dest: pathlib.Path) -> None:
     status = _run(_juju_argv(binary, "status", ["--format=yaml"], model))
     _write(dest / _STATUS_NAME, status)
 
-    debug = _run(_juju_argv(binary, "debug-log", ["--replay", "--no-tail"], model))
-    kept, truncated = _tail_lines(debug.stdout, _DEBUG_LOG_LINES)
-    _write(dest / "juju-debug-log.txt", debug, stdout=kept, truncated=truncated)
+    debug = _run(_debug_log_argv(binary, model))
+    _write(dest / "juju-debug-log.txt", debug)
 
     listing = _run(["lxc", "list"])
     _write(dest / "lxc-list.txt", listing)
@@ -162,6 +163,14 @@ def _juju_argv(binary: str, command: str, args: list[str], model: str | None) ->
     argv = [binary, command, *args]
     if model is not None:
         argv.extend(["-m", model])
+    return argv
+
+
+def _debug_log_argv(binary: str, model: str | None) -> list[str]:
+    argv = [binary, "debug-log"]
+    if model is not None:
+        argv.extend(["-m", model])
+    argv.extend(["--limit", _DEBUG_LOG_LIMIT])
     return argv
 
 
@@ -257,31 +266,20 @@ def _as_text(data: object) -> str:
     return str(data)
 
 
-def _tail_lines(text: str, limit: int) -> tuple[str, bool]:
-    lines = text.splitlines(keepends=True)
-    if len(lines) <= limit:
-        return text, False
-    return "".join(lines[-limit:]), True
-
-
-def _render(cmd: _Cmd, stdout: str, *, truncated: bool) -> str:
+def _render(cmd: _Cmd, stdout: str) -> str:
     exit_text = "none" if cmd.returncode is None else str(cmd.returncode)
     parts = [f"$ {shlex.join(cmd.argv)}", f"exit={exit_text}"]
     if cmd.stderr:
         parts.append("--- stderr ---")
         parts.append(cmd.stderr.rstrip("\n"))
-    if truncated:
-        parts.append(f"truncated_to_last_lines={_DEBUG_LOG_LINES}")
     parts.append("--- stdout ---")
     return "\n".join(parts) + "\n" + stdout
 
 
-def _write(
-    path: pathlib.Path, cmd: _Cmd, stdout: str | None = None, *, truncated: bool = False
-) -> None:
+def _write(path: pathlib.Path, cmd: _Cmd, stdout: str | None = None) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         body = cmd.stdout if stdout is None else stdout
-        path.write_text(_render(cmd, body, truncated=truncated), encoding="utf-8")
+        path.write_text(_render(cmd, body), encoding="utf-8")
     except Exception:
         logger.exception("failed to write %s", path)

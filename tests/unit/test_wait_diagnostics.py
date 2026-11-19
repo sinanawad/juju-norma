@@ -20,7 +20,7 @@ diag = importlib.util.module_from_spec(_spec)
 sys.modules["integration_diagnostics"] = diag
 _spec.loader.exec_module(diag)
 
-_WAIT_CALL = re.compile(r"\b(?:juju|j)\.wait\(")
+_WAIT_CALL = re.compile(r"\.wait\(")
 _SUBORDINATE_NODE = (
     "tests/integration/test_subordinate.py::TestSubordinate::test_colocated_via_juju_info (call)"
 )
@@ -142,10 +142,10 @@ def test_successful_dump_writes_status_debug_log_and_instance_logs(scripted_run,
             assert argv == [
                 "/usr/bin/juju",
                 "debug-log",
-                "--replay",
-                "--no-tail",
                 "-m",
                 "norma-deadbeef",
+                "--limit",
+                "2000",
             ]
             return _completed(0, "UNIT_AGENT_NEVER_STARTED\n")
         if argv == ["lxc", "list"]:
@@ -185,11 +185,22 @@ def test_successful_dump_writes_status_debug_log_and_instance_logs(scripted_run,
     assert not (dest / "juju-c0ffee-0").exists()
 
 
-def test_debug_log_keeps_the_last_2000_lines(scripted_run, tmp_path):
+def test_debug_log_requests_the_last_lines_and_keeps_the_command_output(scripted_run, tmp_path):
+    """Juju applies --limit. A killed --replay stream must not be relabeled as the tail."""
     payload = "".join(f"line-{i}\n" for i in range(2500))
 
     def handler(argv, kwargs):
         if "debug-log" in argv:
+            assert argv == [
+                "/usr/bin/juju",
+                "debug-log",
+                "-m",
+                "norma-deadbeef",
+                "--limit",
+                "2000",
+            ]
+            assert "--replay" not in argv
+            assert "--lines" not in argv
             return _completed(0, payload)
         if argv == ["lxc", "list"]:
             return _completed(0, "")
@@ -197,11 +208,13 @@ def test_debug_log_keeps_the_last_2000_lines(scripted_run, tmp_path):
 
     scripted_run["handler"] = handler
     dest = diag.dump_wait_diagnostics(_Juju(), "logs")
-    stdout = (dest / "juju-debug-log.txt").read_text().split("--- stdout ---\n", 1)[1]
+    text = (dest / "juju-debug-log.txt").read_text()
+    assert "truncated_to_last_lines" not in text
+    stdout = text.split("--- stdout ---\n", 1)[1]
     lines = stdout.splitlines()
-    assert lines[0] == "line-500"
+    assert lines[0] == "line-0"
     assert lines[-1] == "line-2499"
-    assert len(lines) == 2000
+    assert len(lines) == 2500
 
 
 def test_lxc_list_is_used_when_status_has_no_instance_id(scripted_run, tmp_path):
@@ -346,6 +359,15 @@ def test_explicit_diag_name_wins_over_the_current_test(scripted_run, tmp_path, m
     root = _root(tmp_path)
     assert (root / "juju" / "juju-status.yaml").is_file()
     assert list(root.iterdir()) == [root / "juju"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["juju.wait(", "j.wait(", "isolated.wait(", "model.wait("],
+)
+def test_wait_guard_matches_any_receiver(line):
+    assert _WAIT_CALL.search(line)
+    assert _WAIT_CALL.search(f"    {line}")
 
 
 def test_every_jubilant_wait_is_wrapped():
