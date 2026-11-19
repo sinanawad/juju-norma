@@ -229,11 +229,18 @@ jobs:
         run: make integration-smoke
       # Written only when a jubilant wait times out (agent pending, cloud-init,
       # machine logs). An assertion failure produces no directory.
+      # replace() is not a GitHub Actions expression function; sanitize in the shell.
+      - name: Name wait-timeout diagnostics artifact
+        if: failure()
+        id: diagnostics
+        env:
+          CHANNEL: ${{ matrix.channel }}
+        run: echo "name=integration-diagnostics-$(echo "${CHANNEL}-smoke" | tr '/' '-')" >> "$GITHUB_OUTPUT"
       - name: Upload wait-timeout diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: integration-diagnostics-${{ replace(matrix.channel, '/', '-') }}-smoke
+          name: ${{ steps.diagnostics.outputs.name }}
           path: artifacts/integration-diagnostics
           retention-days: 7
           if-no-files-found: ignore
@@ -304,11 +311,18 @@ jobs:
         timeout-minutes: 80
       # Written only when a jubilant wait times out (agent pending, cloud-init,
       # machine logs). An assertion failure produces no directory.
+      # replace() is not a GitHub Actions expression function; sanitize in the shell.
+      - name: Name wait-timeout diagnostics artifact
+        if: failure()
+        id: diagnostics
+        env:
+          CHANNEL: ${{ matrix.juju-channel }}
+        run: echo "name=integration-diagnostics-$(echo "${CHANNEL}-full" | tr '/' '-')" >> "$GITHUB_OUTPUT"
       - name: Upload wait-timeout diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: integration-diagnostics-${{ replace(matrix.juju-channel, '/', '-') }}-full
+          name: ${{ steps.diagnostics.outputs.name }}
           path: artifacts/integration-diagnostics
           retention-days: 7
           if-no-files-found: ignore

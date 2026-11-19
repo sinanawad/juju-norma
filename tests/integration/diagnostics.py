@@ -49,21 +49,23 @@ class _Cmd:
         self.stderr = stderr
 
 
-def wait(juju, *args, diag_name: str | None = None, **kwargs):
+def wait(juju, *args, diag_name: str | None = None, diagnose: bool = True, **kwargs):
     """Call ``juju.wait`` and dump diagnostics if it times out.
 
     The ``TimeoutError`` object raised by jubilant is re-raised unchanged.
     ``diag_name`` selects the artifact directory; otherwise the current pytest
-    node id is used.
+    node id is used. ``diagnose=False`` skips the dump for a timeout the caller
+    already expects to handle.
     """
     try:
         return juju.wait(*args, **kwargs)
     except TimeoutError:
-        try:
-            dest = dump_wait_diagnostics(juju, _label(diag_name))
-            logger.warning("juju wait timed out; diagnostics written to %s", dest)
-        except Exception:
-            logger.exception("wait-timeout diagnostics failed")
+        if diagnose:
+            try:
+                dest = dump_wait_diagnostics(juju, _label(diag_name))
+                logger.warning("juju wait timed out; diagnostics written to %s", dest)
+            except Exception:
+                logger.exception("wait-timeout diagnostics failed")
         raise
 
 
@@ -93,9 +95,9 @@ def _diagnostics_root() -> pathlib.Path:
 
 
 def _safe_component(name: str) -> str:
+    """Make a single path component, keeping pytest param ids that contain ``/``."""
     text = name.strip().split(" (", 1)[0].strip()
-    if "/" in text:
-        text = text.rsplit("/", 1)[-1]
+    text = text.replace("/", "_")
     text = text.replace("::", "-")
     text = re.sub(r"[^A-Za-z0-9._-]+", "-", text)
     text = re.sub(r"-{2,}", "-", text).strip("-.")
@@ -237,25 +239,45 @@ def _instances_from_lxc(text: str) -> list[str]:
 
 
 def _run(argv: list[str]) -> _Cmd:
+    """Run a command. On timeout, kill and drain the pipes so partial output is kept."""
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
-            stdin=subprocess.DEVNULL,
-            timeout=COMMAND_TIMEOUT_SECONDS,
-            check=False,
         )
-    except subprocess.TimeoutExpired as exc:
-        stderr = _as_text(exc.stderr)
-        note = f"command timed out after {COMMAND_TIMEOUT_SECONDS}s"
-        stderr = f"{stderr}\n{note}" if stderr else note
-        return _Cmd(list(argv), None, _as_text(exc.stdout), stderr)
     except Exception as exc:
         return _Cmd(list(argv), None, "", f"{type(exc).__name__}: {exc}")
-    return _Cmd(list(argv), completed.returncode, completed.stdout or "", completed.stderr or "")
+    try:
+        stdout, stderr = proc.communicate(timeout=COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # subprocess.run() only keeps what TimeoutExpired already holds, which on
+        # POSIX is empty when the bytes are still sitting in the pipe. Kill, then
+        # communicate() again to drain them.
+        proc.kill()
+        try:
+            stdout, stderr = proc.communicate()
+        except Exception as exc:
+            note = (
+                f"command timed out after {COMMAND_TIMEOUT_SECONDS}s; "
+                f"output truncated by timeout\n{type(exc).__name__}: {exc}"
+            )
+            return _Cmd(list(argv), None, "", note)
+        return _Cmd(list(argv), None, stdout or "", _timeout_note(stderr or ""))
+    except Exception as exc:
+        proc.kill()
+        return _Cmd(list(argv), None, "", f"{type(exc).__name__}: {exc}")
+    return _Cmd(list(argv), proc.returncode, stdout or "", stderr or "")
+
+
+def _timeout_note(stderr: str) -> str:
+    note = f"command timed out after {COMMAND_TIMEOUT_SECONDS}s; output truncated by timeout"
+    stripped = stderr.rstrip("\n")
+    return f"{stripped}\n{note}" if stripped else note
 
 
 def _as_text(data: object) -> str:

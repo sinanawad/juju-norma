@@ -77,21 +77,79 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
+class _Finished:
+    """Popen stand-in whose communicate() returns the handler's output."""
+
+    def __init__(self, argv, state, result):
+        self.args = argv
+        self.returncode = result.returncode
+        self._stdout = result.stdout
+        self._stderr = result.stderr
+        self._state = state
+
+    def communicate(self, timeout=None):
+        self._state["timeouts"].append(timeout)
+        return self._stdout, self._stderr
+
+    def kill(self):
+        self._state["killed"].append(list(self.args))
+
+
+class _TimeoutThenOutput:
+    """First communicate() times out with no captured bytes; the drain returns them.
+
+    This is the POSIX subprocess.run() failure mode: TimeoutExpired.stdout is empty
+    while the pipe still holds what the child wrote.
+    """
+
+    def __init__(self, argv, state, stdout, stderr):
+        self.args = argv
+        self.returncode = None
+        self._stdout = stdout
+        self._stderr = stderr
+        self._state = state
+        self._drained = False
+
+    def communicate(self, timeout=None):
+        if not self._drained:
+            self._drained = True
+            self._state["timeouts"].append(timeout)
+            raise subprocess.TimeoutExpired(self.args, timeout or 0, output=None, stderr=None)
+        return self._stdout, self._stderr
+
+    def kill(self):
+        self._state["killed"].append(list(self.args))
+
+
+def _captured_text(data) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", "replace")
+    return str(data)
+
+
 @pytest.fixture(autouse=True)
 def scripted_run(monkeypatch):
-    """Replace subprocess.run so a forgotten handler cannot touch a real juju or lxc."""
-    state: dict = {"calls": [], "kwargs": [], "handler": None}
+    """Replace Popen so a forgotten handler cannot touch a real juju or lxc."""
+    state: dict = {"calls": [], "kwargs": [], "handler": None, "timeouts": [], "killed": []}
 
-    def _run(argv, **kwargs):
+    def _popen(argv, **kwargs):
         state["calls"].append(list(argv))
         state["kwargs"].append(kwargs)
         handler = state["handler"]
         if handler is None:
             missing = argv[0] if argv else "command"
             raise FileNotFoundError(missing)
-        return handler(list(argv), kwargs)
+        try:
+            result = handler(list(argv), kwargs)
+        except subprocess.TimeoutExpired as exc:
+            return _TimeoutThenOutput(
+                argv, state, _captured_text(exc.stdout), _captured_text(exc.stderr)
+            )
+        return _Finished(argv, state, result)
 
-    monkeypatch.setattr(diag.subprocess, "run", _run)
+    monkeypatch.setattr(diag.subprocess, "Popen", _popen)
     return state
 
 
@@ -121,10 +179,15 @@ def test_each_failing_or_missing_command_is_tolerated(scripted_run, tmp_path):
     assert "FileNotFoundError" in status
     assert "permission denied" in debug
     assert "partial list" in listing
+    assert "truncated by timeout" in listing
     assert scripted_run["calls"][0][0] == "/usr/bin/juju"
-    assert all(kw["timeout"] == diag.COMMAND_TIMEOUT_SECONDS for kw in scripted_run["kwargs"])
+    assert scripted_run["killed"] == [["lxc", "list"]]
     assert diag.COMMAND_TIMEOUT_SECONDS <= 30
+    assert scripted_run["timeouts"]
+    assert all(timeout == diag.COMMAND_TIMEOUT_SECONDS for timeout in scripted_run["timeouts"])
     assert all(kw["stdin"] is subprocess.DEVNULL for kw in scripted_run["kwargs"])
+    assert all(kw["stdout"] is subprocess.PIPE for kw in scripted_run["kwargs"])
+    assert all(kw["stderr"] is subprocess.PIPE for kw in scripted_run["kwargs"])
 
 
 def test_successful_dump_writes_status_debug_log_and_instance_logs(scripted_run, tmp_path):
@@ -317,6 +380,17 @@ def test_second_timeout_does_not_clobber_the_first_dump(scripted_run, tmp_path):
     assert "status-dump-2" in (root / "same-2" / "juju-status.yaml").read_text()
 
 
+def test_expected_timeout_can_skip_diagnostics(scripted_run):
+    err = TimeoutError("cascade probe")
+    ready = object()
+    juju = _Juju(error=err)
+    with pytest.raises(TimeoutError) as raised:
+        diag.wait(juju, ready, timeout=120, diagnose=False)
+    assert raised.value is err
+    assert juju.calls == [((ready,), {"timeout": 120})]
+    assert scripted_run["calls"] == []
+
+
 def test_non_timeout_errors_skip_diagnostics(scripted_run):
     err = RuntimeError("unit in error")
     juju = _Juju(error=err)
@@ -348,8 +422,28 @@ def test_wait_names_the_directory_after_the_current_test(scripted_run, tmp_path,
     with pytest.raises(TimeoutError):
         diag.wait(_Juju(error=TimeoutError("stalled")), object(), timeout=900)
 
-    name = "test_subordinate.py-TestSubordinate-test_colocated_via_juju_info"
+    name = "tests_integration_test_subordinate.py-TestSubordinate-test_colocated_via_juju_info"
     assert (_root(tmp_path) / name / "juju-status.yaml").is_file()
+
+
+def test_pytest_param_slash_survives_in_the_directory_name(scripted_run, tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "PYTEST_CURRENT_TEST",
+        "tests/integration/test_constraints.py::test_arch[ubuntu/24.04] (call)",
+    )
+
+    def handler(argv, kwargs):
+        return _completed(0, "machines: {}\n" if "status" in argv else "")
+
+    scripted_run["handler"] = handler
+    with pytest.raises(TimeoutError):
+        diag.wait(_Juju(error=TimeoutError("stalled")), object(), timeout=60)
+
+    names = [path.name for path in _root(tmp_path).iterdir()]
+    assert len(names) == 1
+    assert "test_constraints.py" in names[0]
+    assert "test_arch" in names[0]
+    assert "ubuntu_24.04" in names[0]
 
 
 def test_explicit_diag_name_wins_over_the_current_test(scripted_run, tmp_path, monkeypatch):

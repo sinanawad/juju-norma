@@ -276,7 +276,7 @@ def _no_cascade(juju, request):
     if "mutates" in request.keywords:
         return
     try:
-        wait(juju, jubilant.all_active, timeout=120)
+        wait(juju, jubilant.all_active, timeout=120, diagnose=False)
     except TimeoutError:
         juju.config(APP, reset=["calibration-int", "calibration-string", "bad-behavior-mode"])
         wait(juju, jubilant.all_active, timeout=180)
