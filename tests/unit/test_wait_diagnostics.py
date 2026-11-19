@@ -6,6 +6,7 @@ The unit environment has no juju or lxc. Every subprocess invocation is mocked.
 import importlib.util
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import types
@@ -77,11 +78,22 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
+class _Pipe:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class _Finished:
     """Popen stand-in whose communicate() returns the handler's output."""
 
     def __init__(self, argv, state, result):
         self.args = argv
+        self.pid = 5150
+        self.stdout = _Pipe()
+        self.stderr = _Pipe()
         self.returncode = result.returncode
         self._stdout = result.stdout
         self._stderr = result.stderr
@@ -90,9 +102,6 @@ class _Finished:
     def communicate(self, timeout=None):
         self._state["timeouts"].append(timeout)
         return self._stdout, self._stderr
-
-    def kill(self):
-        self._state["killed"].append(list(self.args))
 
 
 class _TimeoutThenOutput:
@@ -104,6 +113,9 @@ class _TimeoutThenOutput:
 
     def __init__(self, argv, state, stdout, stderr):
         self.args = argv
+        self.pid = 5150
+        self.stdout = _Pipe()
+        self.stderr = _Pipe()
         self.returncode = None
         self._stdout = stdout
         self._stderr = stderr
@@ -111,14 +123,11 @@ class _TimeoutThenOutput:
         self._drained = False
 
     def communicate(self, timeout=None):
+        self._state["timeouts"].append(timeout)
         if not self._drained:
             self._drained = True
-            self._state["timeouts"].append(timeout)
             raise subprocess.TimeoutExpired(self.args, timeout or 0, output=None, stderr=None)
         return self._stdout, self._stderr
-
-    def kill(self):
-        self._state["killed"].append(list(self.args))
 
 
 def _captured_text(data) -> str:
@@ -149,7 +158,11 @@ def scripted_run(monkeypatch):
             )
         return _Finished(argv, state, result)
 
+    def _killpg(pid, sig):
+        state["killed"].append((pid, sig))
+
     monkeypatch.setattr(diag.subprocess, "Popen", _popen)
+    monkeypatch.setattr(diag.os, "killpg", _killpg)
     return state
 
 
@@ -181,13 +194,17 @@ def test_each_failing_or_missing_command_is_tolerated(scripted_run, tmp_path):
     assert "partial list" in listing
     assert "truncated by timeout" in listing
     assert scripted_run["calls"][0][0] == "/usr/bin/juju"
-    assert scripted_run["killed"] == [["lxc", "list"]]
+    assert scripted_run["killed"] == [(5150, signal.SIGKILL)]
     assert diag.COMMAND_TIMEOUT_SECONDS <= 30
-    assert scripted_run["timeouts"]
-    assert all(timeout == diag.COMMAND_TIMEOUT_SECONDS for timeout in scripted_run["timeouts"])
+    assert scripted_run["timeouts"] == [
+        diag.COMMAND_TIMEOUT_SECONDS,
+        diag.COMMAND_TIMEOUT_SECONDS,
+        diag._DRAIN_TIMEOUT_SECONDS,
+    ]
     assert all(kw["stdin"] is subprocess.DEVNULL for kw in scripted_run["kwargs"])
     assert all(kw["stdout"] is subprocess.PIPE for kw in scripted_run["kwargs"])
     assert all(kw["stderr"] is subprocess.PIPE for kw in scripted_run["kwargs"])
+    assert all(kw["start_new_session"] is True for kw in scripted_run["kwargs"])
 
 
 def test_successful_dump_writes_status_debug_log_and_instance_logs(scripted_run, tmp_path):
@@ -308,6 +325,58 @@ def test_lxc_list_is_used_when_status_has_no_instance_id(scripted_run, tmp_path)
     cloud = (dest / "juju-abc123-0" / "cloud-init-output.log").read_text()
     assert "cloud-init log not present" in cloud
     assert (dest / "juju-abc123-0" / "juju-machine-logs.txt").exists()
+
+
+def test_drain_timeout_kills_the_group_and_keeps_partial_output(tmp_path, monkeypatch):
+    """A grandchild holding the pipe must not make the post-kill drain unbounded."""
+    created = []
+    killed = []
+
+    class _Stuck:
+        def __init__(self, argv):
+            self.args = argv
+            self.pid = 4242
+            self.stdout = _Pipe()
+            self.stderr = _Pipe()
+            self.timeouts: list = []
+            self._calls = 0
+
+        def communicate(self, timeout=None):
+            self.timeouts.append(timeout)
+            self._calls += 1
+            if self._calls == 1:
+                raise subprocess.TimeoutExpired(self.args, timeout or 0, output=None, stderr=None)
+            raise subprocess.TimeoutExpired(
+                self.args,
+                timeout or 0,
+                output=b"partial-from-pipe",
+                stderr=b"still-open",
+            )
+
+    def _popen(argv, **kwargs):
+        proc = _Stuck(list(argv))
+        proc.kwargs = kwargs
+        created.append(proc)
+        return proc
+
+    def _killpg(pid, sig):
+        killed.append((pid, sig))
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(diag.subprocess, "Popen", _popen)
+    monkeypatch.setattr(diag.os, "killpg", _killpg)
+
+    dest = diag.dump_wait_diagnostics(_Juju(), "stuck-drain")
+    text = (dest / "juju-status.yaml").read_text()
+    assert "partial-from-pipe" in text
+    assert "still-open" in text
+    assert "truncated by timeout" in text
+    assert created
+    assert all(proc.timeouts == [diag.COMMAND_TIMEOUT_SECONDS, 5] for proc in created)
+    assert all(proc.kwargs["start_new_session"] is True for proc in created)
+    assert all(proc.stdout.closed and proc.stderr.closed for proc in created)
+    assert killed == [(4242, signal.SIGKILL)] * len(created)
 
 
 def test_model_flag_is_omitted_when_the_juju_object_has_no_model(scripted_run):

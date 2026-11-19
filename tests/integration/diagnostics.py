@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import shlex
+import signal
 import subprocess
 
 import yaml
@@ -20,6 +21,9 @@ import yaml
 logger = logging.getLogger(__name__)
 
 COMMAND_TIMEOUT_SECONDS = 20
+# Bound the post-kill drain. A grandchild that inherited the pipe can ignore
+# the leader's death and otherwise block communicate() forever.
+_DRAIN_TIMEOUT_SECONDS = 5
 # Juju 4.0 rejects ``--no-tail`` together with ``--lines`` (debuglog.go Init).
 # ``--limit N`` prints the N most recent lines and exits; it does not replay.
 _DEBUG_LOG_LIMIT = "2000"
@@ -239,13 +243,14 @@ def _instances_from_lxc(text: str) -> list[str]:
 
 
 def _run(argv: list[str]) -> _Cmd:
-    """Run a command. On timeout, kill and drain the pipes so partial output is kept."""
+    """Run a command. On timeout, kill the process group and drain what was captured."""
     try:
         proc = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            start_new_session=True,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -255,13 +260,21 @@ def _run(argv: list[str]) -> _Cmd:
     try:
         stdout, stderr = proc.communicate(timeout=COMMAND_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        # subprocess.run() only keeps what TimeoutExpired already holds, which on
-        # POSIX is empty when the bytes are still sitting in the pipe. Kill, then
-        # communicate() again to drain them.
-        proc.kill()
+        # A grandchild can keep the pipe open after the leader dies, so the
+        # drain itself has a deadline. start_new_session makes pid the group id.
+        _kill_group(proc)
         try:
-            stdout, stderr = proc.communicate()
+            stdout, stderr = proc.communicate(timeout=_DRAIN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            _close_pipes(proc)
+            return _Cmd(
+                list(argv),
+                None,
+                _as_text(exc.stdout),
+                _timeout_note(_as_text(exc.stderr)),
+            )
         except Exception as exc:
+            _close_pipes(proc)
             note = (
                 f"command timed out after {COMMAND_TIMEOUT_SECONDS}s; "
                 f"output truncated by timeout\n{type(exc).__name__}: {exc}"
@@ -269,9 +282,28 @@ def _run(argv: list[str]) -> _Cmd:
             return _Cmd(list(argv), None, "", note)
         return _Cmd(list(argv), None, stdout or "", _timeout_note(stderr or ""))
     except Exception as exc:
-        proc.kill()
+        _kill_group(proc)
         return _Cmd(list(argv), None, "", f"{type(exc).__name__}: {exc}")
     return _Cmd(list(argv), proc.returncode, stdout or "", stderr or "")
+
+
+def _kill_group(proc) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception:
+        logger.exception("failed to kill process group %s", getattr(proc, "pid", None))
+
+
+def _close_pipes(proc) -> None:
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except Exception:
+            logger.exception("failed to close pipe")
 
 
 def _timeout_note(stderr: str) -> str:
