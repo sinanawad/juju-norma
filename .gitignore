@@ -16,6 +16,7 @@ dist/
 .pytest_cache/
 htmlcov/
 report.xml
+/artifacts/
 
 # Tooling
 .ruff_cache/

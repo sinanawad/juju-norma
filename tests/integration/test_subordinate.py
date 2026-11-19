@@ -12,6 +12,7 @@ import jubilant
 import pytest
 
 from .conftest import RESOURCE_NAME, SUBORDINATE_APP
+from .diagnostics import wait
 
 PRINCIPAL = "norma-pri"
 
@@ -46,7 +47,7 @@ class TestSubordinate:
         """F14: subordinate deploys onto the principal's machine via juju-info."""
         juju = isolated_juju
         juju.deploy(str(charm_path), app=PRINCIPAL, resources={RESOURCE_NAME: str(workload_bin)})
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         # A subordinate has no units until integrated with a principal.
         juju.deploy(str(_require_subordinate), app=SUBORDINATE_APP)
@@ -56,7 +57,7 @@ class TestSubordinate:
             subs = _subordinate_units(s, PRINCIPAL)
             return bool(subs and all(u.is_active for u in subs.values()))
 
-        juju.wait(_sub_active, timeout=600)
+        wait(juju, _sub_active, timeout=600)
 
         # get-principal reports the colocated principal unit.
         sub_unit = next(iter(_subordinate_units(juju.status(), PRINCIPAL)))

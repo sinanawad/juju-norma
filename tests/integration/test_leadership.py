@@ -21,6 +21,7 @@ import jubilant
 import pytest
 
 from .conftest import RESOURCE_NAME
+from .diagnostics import wait
 
 LEAD_APP = "norma-lead"
 
@@ -64,7 +65,8 @@ class TestLeaderReelection:
             "2",
             include_model=True,
         )
-        juju.wait(
+        wait(
+            juju,
             lambda s: (
                 LEAD_APP in s.apps and len(s.apps[LEAD_APP].units) == 2 and jubilant.all_active(s)
             ),
@@ -93,7 +95,8 @@ class TestLeaderReelection:
         assert new_leader != leader, f"leader did not change (still {leader})"
 
         # Reconverges to the single survivor, active/idle.
-        juju.wait(
+        wait(
+            juju,
             lambda s: len(s.apps[LEAD_APP].units) == 1 and jubilant.all_active(s),
             timeout=300,
         )

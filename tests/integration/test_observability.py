@@ -15,6 +15,7 @@ import jubilant
 import pytest
 
 from .conftest import RESOURCE_NAME
+from .diagnostics import wait
 
 GAGENT = "gagent"
 PRINCIPAL = "norma-obs"
@@ -32,7 +33,7 @@ class TestCosAgent:
     ):
         juju = isolated_juju
         juju.deploy(str(charm_path), app=PRINCIPAL, resources={RESOURCE_NAME: str(workload_bin)})
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         juju.cli(
             "deploy",
@@ -51,7 +52,7 @@ class TestCosAgent:
         def _related(s) -> bool:
             return GAGENT in s.apps and bool(s.apps[GAGENT].units)
 
-        juju.wait(_related, timeout=900)
+        wait(juju, _related, timeout=900)
 
         task = juju.run(
             f"{PRINCIPAL}/leader", "get-relation-data", params={"endpoint": "cos-agent"}

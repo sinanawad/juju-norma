@@ -15,6 +15,7 @@ import jubilant
 import pytest
 
 from .conftest import RESOURCE_NAME
+from .diagnostics import wait
 
 APP = "norma-tdown"
 
@@ -27,7 +28,7 @@ class TestTeardown:
         """Happy path: the workload is fully up, then remove-application is clean."""
         juju = isolated_juju
         juju.deploy(str(charm_path), app=APP, resources={RESOURCE_NAME: str(workload_bin)})
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         # Baseline: the systemd workload is laid down + running (the three teardown
         # observables the systemd collector reports).
@@ -42,7 +43,7 @@ class TestTeardown:
 
         # A well-behaved unit removes cleanly (stop+remove handlers tear down).
         juju.cli("remove-application", APP, "--no-prompt", include_model=True)
-        juju.wait(lambda s: APP not in s.apps, timeout=300)
+        wait(juju, lambda s: APP not in s.apps, timeout=300)
 
     def test_stuck_dying_resists_then_force(
         self, isolated_juju: jubilant.Juju, charm_path, workload_bin
@@ -51,12 +52,12 @@ class TestTeardown:
         in dying/error; --force is required to reclaim it."""
         juju = isolated_juju
         juju.deploy(str(charm_path), app=APP, resources={RESOURCE_NAME: str(workload_bin)})
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         # Arm the teardown trap. stuck-dying acts only on the teardown path, so the
         # unit stays active until removal is attempted.
         juju.config(APP, {"bad-behavior-mode": "stuck-dying"})
-        juju.wait(jubilant.all_active, timeout=180)
+        wait(juju, jubilant.all_active, timeout=180)
 
         # Normal removal must NOT complete — the raising remove hook wedges it.
         juju.cli("remove-application", APP, "--no-prompt", include_model=True)
@@ -69,4 +70,4 @@ class TestTeardown:
 
         # --force reclaims the wedged unit.
         juju.cli("remove-application", APP, "--no-prompt", "--force", include_model=True)
-        juju.wait(lambda s: APP not in s.apps, timeout=300)
+        wait(juju, lambda s: APP not in s.apps, timeout=300)

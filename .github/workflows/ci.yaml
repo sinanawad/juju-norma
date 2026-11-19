@@ -227,6 +227,16 @@ jobs:
           juju bootstrap localhost lxd
       - name: Smoke integration (jubilant, LXD containers)
         run: make integration-smoke
+      # Written only when a jubilant wait times out (agent pending, cloud-init,
+      # machine logs). An assertion failure produces no directory.
+      - name: Upload wait-timeout diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: integration-diagnostics-${{ replace(matrix.channel, '/', '-') }}-smoke
+          path: artifacts/integration-diagnostics
+          retention-days: 7
+          if-no-files-found: ignore
       # Machine-readable per-channel pass/fail record — the deliverable of a
       # calibration charm. Uploaded even on failure; pytest writes report.xml
       # regardless of test outcome.
@@ -292,6 +302,16 @@ jobs:
       - name: Integration (jubilant, LXD)
         run: make integration
         timeout-minutes: 80
+      # Written only when a jubilant wait times out (agent pending, cloud-init,
+      # machine logs). An assertion failure produces no directory.
+      - name: Upload wait-timeout diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: integration-diagnostics-${{ replace(matrix.juju-channel, '/', '-') }}-full
+          path: artifacts/integration-diagnostics
+          retention-days: 7
+          if-no-files-found: ignore
       # Per-channel machine-readable pass/fail record (named per Juju channel so
       # a future 4.1 / 26.04 matrix slots in). Uploaded even on failure.
       - name: Compute report name

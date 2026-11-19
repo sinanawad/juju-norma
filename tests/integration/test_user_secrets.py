@@ -21,6 +21,7 @@ import jubilant
 import pytest
 
 from .conftest import RESOURCE_NAME
+from .diagnostics import wait
 
 APP = "norma-usec"
 
@@ -37,7 +38,7 @@ class TestUserSecret:
         """A: add-secret -> grant-secret -> config set -> charm resolves -> active."""
         juju = isolated_juju
         juju.deploy(str(charm_path), app=APP, resources={RESOURCE_NAME: str(workload_bin)})
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         uri = juju.cli("add-secret", "cal-user-secret", "token=s3cr3t").strip()
         assert uri.startswith("secret:"), f"unexpected add-secret output: {uri!r}"
@@ -47,12 +48,12 @@ class TestUserSecret:
         # get_secret().get_content(); staying active proves the charm read it
         # (an unresolvable secret would force BlockedStatus, charm.py:203-212).
         juju.config(APP, {"calibration-secret": uri})
-        juju.wait(jubilant.all_active, timeout=180)
+        wait(juju, jubilant.all_active, timeout=180)
         assert _unit(juju).is_active, "granted user secret did not resolve to active"
 
         # Reset is clean (recovers to active with no secret config).
         juju.config(APP, reset=["calibration-secret"])
-        juju.wait(jubilant.all_active, timeout=180)
+        wait(juju, jubilant.all_active, timeout=180)
 
     def test_ungranted_secret_blocks_at_read_time(
         self, isolated_juju: jubilant.Juju, charm_path, workload_bin
@@ -69,7 +70,7 @@ class TestUserSecret:
         """
         juju = isolated_juju
         juju.deploy(str(charm_path), app=APP, resources={RESOURCE_NAME: str(workload_bin)})
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         # Juju secret keys need a minimum length (single-char keys are rejected),
         # so use a real key name here too.
@@ -80,12 +81,12 @@ class TestUserSecret:
             juju.config(APP, {"calibration-secret": uri})
         except jubilant.CLIError:
             # A future Juju may enforce the grant at config-set time; app untouched.
-            juju.wait(jubilant.all_active, timeout=60)
+            wait(juju, jubilant.all_active, timeout=60)
             assert _unit(juju).is_active
             return
 
         # 4.0 behaviour: accepted at set, charm Blocks at read with a permission error.
-        juju.wait(jubilant.any_blocked, timeout=180)
+        wait(juju, jubilant.any_blocked, timeout=180)
         unit = _unit(juju)
         assert unit.is_blocked, (
             f"ungranted secret left status active: {unit.workload_status.message!r}"

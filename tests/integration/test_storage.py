@@ -11,6 +11,7 @@ import jubilant
 import pytest
 
 from .conftest import APP
+from .diagnostics import wait
 
 
 # The read-only filesystem-store check is container-safe + fast (LXD provisions
@@ -72,7 +73,7 @@ class TestDynamicStorage:
         assert _data_status(new_id) != "attached", f"{new_id} never detached"
 
         juju.cli("attach-storage", unit, new_id)
-        juju.wait(jubilant.all_active, timeout=300)
+        wait(juju, jubilant.all_active, timeout=300)
 
 
 @pytest.mark.xfail(
@@ -81,6 +82,6 @@ class TestDynamicStorage:
 class TestBlockStorage:
     def test_add_block_storage(self, juju: jubilant.Juju):
         juju.cli("add-storage", f"{APP}/0", "blk=lxd,1G")
-        juju.wait(jubilant.all_active, timeout=300)
+        wait(juju, jubilant.all_active, timeout=300)
         task = juju.run(f"{APP}/leader", "check-storage", params={"name": "blk"})
         assert task.results["attached"] == "true"

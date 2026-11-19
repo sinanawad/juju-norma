@@ -8,6 +8,7 @@ import jubilant
 import pytest
 
 from .conftest import APP
+from .diagnostics import wait
 
 # expose/unexpose + open-port checks are container-safe and fast — per-PR smoke
 # subset. (Multi-space binding stays out — it needs MAAS; see module docstring.)
@@ -21,7 +22,7 @@ class TestExpose:
         def _exposed(s) -> bool:
             return s.apps[APP].exposed
 
-        juju.wait(_exposed, timeout=120)
+        wait(juju, _exposed, timeout=120)
         assert juju.status().apps[APP].exposed
         juju.cli("unexpose", APP)
 

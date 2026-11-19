@@ -19,6 +19,7 @@ import jubilant
 import pytest
 
 from .conftest import RESOURCE_NAME
+from .diagnostics import wait
 
 ONE = "norma-evt"
 PROV = "norma-evt-prov"
@@ -72,7 +73,7 @@ class TestEventOrder:
         """Canonical machine startup: install -> (leader-elected) -> config-changed -> start."""
         juju = isolated_juju
         juju.deploy(str(charm_path), app=ONE, resources={RESOURCE_NAME: str(workload_bin)})
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         # active can be reached on the install hook alone (workload started there),
         # so wait for the whole startup sequence to be logged before asserting order.
@@ -123,10 +124,10 @@ class TestEventOrder:
         resources = {RESOURCE_NAME: str(workload_bin)}
         juju.deploy(str(charm_path), app=PROV, resources=resources)
         juju.deploy(str(charm_path), app=REQ, resources=resources)
-        juju.wait(jubilant.all_active, timeout=900)
+        wait(juju, jubilant.all_active, timeout=900)
 
         juju.integrate(f"{PROV}:calibration-provider", f"{REQ}:calibration-requirer")
-        juju.wait(jubilant.all_active, timeout=300)
+        wait(juju, jubilant.all_active, timeout=300)
 
         # Both units were active before integrate, so all_active returns at once;
         # wait for the relation hooks themselves to be logged before asserting order.

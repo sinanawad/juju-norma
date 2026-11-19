@@ -37,6 +37,7 @@ import uuid
 import jubilant
 import pytest
 
+from .diagnostics import wait
 from .setup_env import (
     SetupError,
     bootstrap_controller,
@@ -207,7 +208,7 @@ def juju(environment_ready, charm_path, workload_bin):
     j = jubilant.Juju(model=model_name, cli_binary=binary)
     try:
         j.deploy(str(charm_path), app=APP, resources=resources)
-        j.wait(jubilant.all_active, timeout=600)
+        wait(j, jubilant.all_active, timeout=600, diag_name="juju")
         yield j
     finally:
         if not keep:
@@ -275,7 +276,7 @@ def _no_cascade(juju, request):
     if "mutates" in request.keywords:
         return
     try:
-        juju.wait(jubilant.all_active, timeout=120)
+        wait(juju, jubilant.all_active, timeout=120)
     except TimeoutError:
         juju.config(APP, reset=["calibration-int", "calibration-string", "bad-behavior-mode"])
-        juju.wait(jubilant.all_active, timeout=180)
+        wait(juju, jubilant.all_active, timeout=180)
